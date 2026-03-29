@@ -46,6 +46,8 @@ interface RealtimeSocketLike {
   addEventListener(type: 'message', listener: (event: RealtimeSocketMessageEvent) => void): void;
 }
 
+type RealtimeSocketFactory = (url: string) => RealtimeSocketLike | null;
+
 export interface RealtimeSnapshotCache {
   latestByAsset: Partial<Record<PaperMarketAsset, PaperMarketSnapshot>>;
 }
@@ -82,7 +84,7 @@ export interface HybridPaperMarketSource {
 
 export interface RealtimePaperMarketSourceOptions {
   fetchImpl?: typeof fetch;
-  websocketFactory?: (url: string) => RealtimeSocketLike;
+  websocketFactory?: RealtimeSocketFactory;
   now?: () => Date;
   initialWaitMs?: number;
   pingIntervalMs?: number;
@@ -226,7 +228,7 @@ function looksLikeReliableBinarySnapshot(snapshot: PaperMarketSnapshot): boolean
   return true;
 }
 
-function getDefaultWebSocketFactory(): (url: string) => RealtimeSocketLike {
+function getDefaultWebSocketFactory(): RealtimeSocketFactory {
   return (url: string) => new WebSocket(url) as unknown as RealtimeSocketLike;
 }
 
@@ -507,7 +509,17 @@ export function createRealtimePaperMarketSource(
 
   function openSocket(detailsByAsset: Partial<Record<PaperMarketAsset, RealtimeAssetMetadata>>): void {
     clearSocketResources();
-    const nextSocket = websocketFactory(REALTIME_MARKET_SOCKET_URL);
+    let nextSocket: RealtimeSocketLike | null = null;
+    try {
+      nextSocket = websocketFactory(REALTIME_MARKET_SOCKET_URL);
+    } catch {
+      nextSocket = null;
+    }
+
+    if (!nextSocket) {
+      return;
+    }
+
     socket = nextSocket;
 
     nextSocket.addEventListener('open', () => {

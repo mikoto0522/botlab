@@ -848,3 +848,90 @@ test('realtime paper market source normalizes websocket updates into live snapsh
   assert.equal(snapshots[1]?.upPrice, 0.5);
   assert.equal(snapshots[1]?.downPrice, 0.5);
 });
+
+test('realtime paper market source degrades cleanly when websocket support is unavailable', async () => {
+  const webSocketGlobal = globalThis as unknown as { WebSocket?: unknown };
+  const originalWebSocket = webSocketGlobal.WebSocket;
+  webSocketGlobal.WebSocket = undefined;
+
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            slug: 'btc-updown-5m-1774781400',
+            active: true,
+            closed: false,
+          },
+          {
+            slug: 'eth-updown-5m-1774781400',
+            active: true,
+            closed: false,
+          },
+        ]),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          volume: 25000,
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/eth-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'eth-updown-5m-1774781400',
+          question: 'Ethereum Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['eth-up-token', 'eth-down-token'],
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          volume: 26000,
+        }),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const realtimeSource = createRealtimePaperMarketSource({
+      fetchImpl: fakeFetch,
+      now: () => new Date('2026-03-29T10:53:27.000Z'),
+      initialWaitMs: 10,
+    });
+
+    const snapshots = await realtimeSource.getLatestSnapshots();
+    await realtimeSource.close();
+
+    assert.deepEqual(snapshots, []);
+  } finally {
+    webSocketGlobal.WebSocket = originalWebSocket;
+  }
+});
