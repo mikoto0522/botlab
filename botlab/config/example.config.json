@@ -1,0 +1,31 @@
+{
+  "runtime": {
+    "mode": "dry-run",
+    "market": {
+      "asset": "BTC",
+      "symbol": "BTC-USD",
+      "timeframe": "5m",
+      "price": 101.2,
+      "changePct24h": 1.2,
+      "momentum": 0.72,
+      "volume": 250000,
+      "timestamp": "2026-03-26T09:30:00.000Z",
+      "candles": [
+        { "timestamp": "2026-03-26T09:10:00.000Z", "open": 98.9, "high": 99.8, "low": 98.7, "close": 99.6, "volume": 1100 },
+        { "timestamp": "2026-03-26T09:15:00.000Z", "open": 99.6, "high": 100.4, "low": 99.5, "close": 100.1, "volume": 1250 },
+        { "timestamp": "2026-03-26T09:20:00.000Z", "open": 100.1, "high": 100.9, "low": 100.0, "close": 100.6, "volume": 1380 },
+        { "timestamp": "2026-03-26T09:25:00.000Z", "open": 100.6, "high": 101.0, "low": 100.3, "close": 100.8, "volume": 1410 },
+        { "timestamp": "2026-03-26T09:30:00.000Z", "open": 100.8, "high": 101.4, "low": 100.7, "close": 101.2, "volume": 1490 }
+      ]
+    },
+    "position": {
+      "side": "flat",
+      "size": 0,
+      "entryPrice": null
+    },
+    "balance": 1000,
+    "clock": {
+      "now": "2026-03-26T09:30:00.000Z"
+    }
+  }
+}

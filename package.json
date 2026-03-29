@@ -1,0 +1,26 @@
+{
+  "name": "botlab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.json --noEmit",
+    "botlab": "tsx botlab/cli.ts",
+    "botlab:list": "tsx botlab/cli.ts list-strategies",
+    "botlab:describe": "tsx botlab/cli.ts describe-strategy",
+    "botlab:run": "tsx botlab/cli.ts run",
+    "botlab:paper": "tsx botlab/cli.ts paper",
+    "botlab:backtest": "tsx botlab/cli.ts backtest",
+    "botlab:backtest:batch": "tsx botlab/cli.ts backtest-batch",
+    "botlab:backtest:hedge": "tsx botlab/cli.ts backtest-hedge",
+    "botlab:analyze:hedge": "tsx botlab/cli.ts analyze-hedge",
+    "botlab:create": "tsx botlab/cli.ts create-strategy",
+    "test:botlab": "tsx --test botlab/tests/**/*.test.ts",
+    "test:botlab:smoke": "tsx --test botlab/tests/cli-smoke.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
