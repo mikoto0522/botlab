@@ -124,6 +124,37 @@ test('loadBotlabConfig loads candle data from a real config file', () => {
   assert.equal(config.runtime.market.candles[1]?.close, 101.7);
 });
 
+test('loadBotlabConfig reads per-strategy parameter overrides from a real config file', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-strategy-params-'));
+  const configPath = path.join(cwd, 'botlab.config.json');
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    runtime: {
+      balance: 100,
+    },
+    strategyParams: {
+      'btc-eth-5m-multi-signal': {
+        btcGuardrailStake: 5,
+        lowConfidenceStake: 5,
+        mediumConfidenceStake: 5,
+        highConfidenceStake: 5,
+        hedgeStakePerLeg: 5,
+      },
+    },
+  }), 'utf-8');
+
+  const config = loadBotlabConfig(configPath, cwd);
+
+  assert.equal(config.runtime.balance, 100);
+  assert.deepEqual(config.strategyParams?.['btc-eth-5m-multi-signal'], {
+    btcGuardrailStake: 5,
+    lowConfidenceStake: 5,
+    mediumConfidenceStake: 5,
+    highConfidenceStake: 5,
+    hedgeStakePerLeg: 5,
+  });
+});
+
 test('botlab cli describe-strategy prints strategy details', async () => {
   const tsxCli = path.resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs');
 

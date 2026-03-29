@@ -111,6 +111,14 @@ Each named paper session gets its own folder under `botlab/paper-sessions/` with
 
 If you stop the command and run the same session name again, Botlab resumes that paper account instead of starting over.
 
+You can also control paper starting cash and strategy sizing from a config file. A ready-to-use example is bundled at `botlab/config/paper-100u-5u.json`, which starts paper trading at `100` and caps the bundled `btc-eth-5m-multi-signal` stake buckets at `5`.
+
+Use it like this:
+
+```bash
+npm run botlab -- paper --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30 --config=botlab/config/paper-100u-5u.json
+```
+
 ## Real Month Data
 
 The project includes downloaded BTC and ETH 5m Polymarket month data:

@@ -2,6 +2,7 @@ import type { BotlabConfig, BotlabStrategyDecision } from './types.js';
 import { buildStrategyContext } from './context.js';
 import { createStrategyRegistry } from './strategy-registry.js';
 import { runStrategy } from './runner.js';
+import { getStrategyParamOverrides, resolveStrategyParams } from './strategy-params.js';
 
 export interface StrategySummary<TParams extends Record<string, unknown> = Record<string, unknown>> {
   id: string;
@@ -53,7 +54,10 @@ export async function listAvailableStrategies(config: BotlabConfig): Promise<Str
     id: strategy.definition.id,
     name: strategy.definition.name,
     description: strategy.definition.description,
-    defaults: cloneDefaults(strategy.definition.defaults),
+    defaults: resolveStrategyParams(
+      cloneDefaults(strategy.definition.defaults),
+      getStrategyParamOverrides(config.strategyParams, strategy.definition.id),
+    ),
   }));
 }
 
@@ -68,7 +72,10 @@ export async function describeStrategyById(
     id: strategy.id,
     name: strategy.name,
     description: strategy.description,
-    defaults: cloneDefaults(strategy.defaults),
+    defaults: resolveStrategyParams(
+      cloneDefaults(strategy.defaults),
+      getStrategyParamOverrides(config.strategyParams, strategy.id),
+    ),
   };
 }
 
@@ -84,9 +91,10 @@ export async function runStrategyById(
   }
 
   const context = buildStrategyContext(config);
+  const paramOverrides = getStrategyParamOverrides(config.strategyParams, strategyId);
   const isolatedStrategy = {
     ...loadedStrategy.definition,
-    defaults: cloneDefaults(loadedStrategy.definition.defaults),
+    defaults: resolveStrategyParams(cloneDefaults(loadedStrategy.definition.defaults), paramOverrides),
   };
   const decision = runStrategy(isolatedStrategy, context);
   const strategy = {

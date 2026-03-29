@@ -71,6 +71,37 @@ function writeSellStrategy(): string {
   return strategyDir;
 }
 
+function writeParametrizedPaperStrategy(): string {
+  const strategyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-param-strategy-'));
+  const strategyPath = path.join(strategyDir, 'paper-param-test.strategy.ts');
+
+  fs.writeFileSync(
+    strategyPath,
+    [
+      'export const strategy = {',
+      "  id: 'paper-param-test',",
+      "  name: 'Paper Param Test',",
+      "  description: 'Uses a configurable stake so paper-loop overrides can be asserted.',",
+      '  defaults: {',
+      '    stake: 100,',
+      '  },',
+      '  evaluate(context, params) {',
+      "    if (context.market.asset !== 'BTC') {",
+      "      return { action: 'hold', reason: 'BTC only' };",
+      '    }',
+      "    if (context.position.side !== 'flat') {",
+      "      return { action: 'hold', reason: 'already in position' };",
+      '    }',
+      "    return { action: 'buy', side: 'up', size: params.stake, reason: 'use configured stake' };",
+      '  },',
+      '};',
+      '',
+    ].join('\n'),
+  );
+
+  return strategyDir;
+}
+
 function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSnapshot, 'asset' | 'slug' | 'bucketStartTime' | 'bucketStartEpoch'>): PaperMarketSnapshot {
   return {
     asset: input.asset,
@@ -485,4 +516,59 @@ test('runPaperLoop logs a failed cycle, keeps the session, and waits before retr
   assert.deepEqual(sleepCalls, [7]);
   assert.equal(events.some((event) => event.type === 'paper-cycle-error' && event.message === 'temporary fetch failure'), true);
   assert.equal(events.some((event) => event.type === 'paper-cycle-complete'), true);
+});
+
+test('runPaperLoop applies configured strategy parameter overrides to position sizing', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-param-'));
+  const strategyDir = writeParametrizedPaperStrategy();
+
+  await runPaperLoop({
+    sessionName: 'Param Session',
+    strategyId: 'paper-param-test',
+    strategyDir,
+    cwd,
+    startingCash: 100,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 1,
+    strategyParamOverrides: {
+      stake: 5,
+    },
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        createSnapshot({
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1711443600',
+          bucketStartTime: '2026-03-26T09:00:00.000Z',
+          bucketStartEpoch: 1711443600,
+          upPrice: 0.4,
+          downPrice: 0.6,
+          upAsk: 0.42,
+          downAsk: 0.62,
+          fetchedAt: '2026-03-26T09:00:10.000Z',
+        }),
+        createSnapshot({
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1711443600',
+          bucketStartTime: '2026-03-26T09:00:00.000Z',
+          bucketStartEpoch: 1711443600,
+          upPrice: 0.55,
+          downPrice: 0.45,
+          upAsk: 0.57,
+          downAsk: 0.47,
+          fetchedAt: '2026-03-26T09:00:10.000Z',
+        }),
+      ],
+      getSnapshotBySlug: async (slug) => {
+        assert.fail(`unexpected slug lookup for ${slug}`);
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Param Session', cwd, { startingCash: 100 });
+
+  assert.equal(state.tradeCount, 1);
+  assert.equal(state.positions.BTC?.shares, 11.69);
+  assert.equal(state.cash < 95.1 && state.cash > 94.9, true);
 });

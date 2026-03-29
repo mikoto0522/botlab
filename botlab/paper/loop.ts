@@ -1,5 +1,6 @@
 import type { BacktestFeeModel } from '../backtest/fees.js';
 import { createStrategyRegistry } from '../core/strategy-registry.js';
+import { resolveStrategyParams } from '../core/strategy-params.js';
 import type {
   BotlabCandle,
   BotlabMarketRuntime,
@@ -45,6 +46,7 @@ export interface RunPaperLoopInput {
   sessionName: string;
   strategyDir: string;
   strategyId?: string;
+  strategyParamOverrides?: Record<string, unknown>;
   cwd?: string;
   startingCash?: number;
   feeModel?: BacktestFeeModel;
@@ -464,6 +466,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
   const sleepMs = input.sleepMs ?? defaultSleep;
   const registry = await createStrategyRegistry(input.strategyDir);
   const strategy = registry.getById(strategyId);
+  const strategyParams = resolveStrategyParams(strategy.defaults, input.strategyParamOverrides);
   const state = resumePaperSessionState(input.sessionName, input.cwd, { startingCash: input.startingCash });
 
   let cyclesCompleted = 0;
@@ -513,7 +516,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
       for (const asset of ['BTC', 'ETH'] as const) {
         const snapshot = snapshotsByAsset[asset];
         const context = buildStrategyContextForSnapshot(state, snapshot, state.history, snapshotsByAsset, cycleTimestamp);
-        const decision = strategy.evaluate(context, structuredClone(strategy.defaults));
+        const decision = strategy.evaluate(context, structuredClone(strategyParams));
         decisionSummaries.push({
           asset,
           action: decision.action,

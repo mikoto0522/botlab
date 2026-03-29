@@ -1,0 +1,15 @@
+{
+  "runtime": {
+    "mode": "paper",
+    "balance": 100
+  },
+  "strategyParams": {
+    "btc-eth-5m-multi-signal": {
+      "btcGuardrailStake": 5,
+      "lowConfidenceStake": 5,
+      "mediumConfidenceStake": 5,
+      "highConfidenceStake": 5,
+      "hedgeStakePerLeg": 5
+    }
+  }
+}

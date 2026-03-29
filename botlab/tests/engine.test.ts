@@ -493,6 +493,33 @@ test('returned strategy defaults do not leak into later runs', async () => {
   });
 });
 
+test('runStrategyById applies configured strategy parameter overrides', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-strategy-override-'));
+  const configPath = path.join(tempDir, 'config.json');
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    runtime: {
+      market: {
+        asset: 'BTC',
+        symbol: 'BTC-USD',
+        timeframe: '5m',
+        momentum: 0.9,
+      },
+    },
+    strategyParams: {
+      'example-momentum': {
+        allocation: 0.05,
+      },
+    },
+  }, null, 2));
+
+  const config = loadBotlabConfig(configPath, process.cwd());
+  const result = await runStrategyById('example-momentum', config);
+
+  assert.equal(result.strategy.defaults.allocation, 0.05);
+  assert.equal(result.decision.size, 0.05);
+});
+
 test('listAvailableStrategies returns the discovered strategy metadata', async () => {
   const config = loadBotlabConfig(undefined, process.cwd());
 

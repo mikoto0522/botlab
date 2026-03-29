@@ -158,6 +158,7 @@ export interface BotlabPaths {
 export interface BotlabConfig {
   paths: BotlabPaths;
   runtime: BotlabRuntimeConfig;
+  strategyParams?: Record<string, Record<string, unknown>>;
 }
 
 export type StrategyAction = 'buy' | 'sell' | 'hold';

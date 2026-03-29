@@ -17,6 +17,7 @@ import { runPaperLoop, type PaperCycleReport } from '../paper/loop.js';
 import { loadPaperSessionState } from '../paper/session-store.js';
 import { resolvePaperSessionPaths } from '../paper/types.js';
 import { formatBacktestNumber, resolveProjectRelativePath } from './backtest-common.js';
+import { getStrategyParamOverrides } from '../core/strategy-params.js';
 
 export interface PaperCommandOptions {
   sessionName: string;
@@ -120,6 +121,7 @@ export async function paperCommand(
       sessionName: options.sessionName,
       strategyDir: config.paths.strategyDir,
       strategyId,
+      strategyParamOverrides: getStrategyParamOverrides(config.strategyParams, strategyId),
       cwd: repoRoot,
       startingCash: config.runtime.balance,
       intervalMs,

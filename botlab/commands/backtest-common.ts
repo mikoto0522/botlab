@@ -13,6 +13,7 @@ export function createBacktestRuntimeOptions(config: BotlabConfig) {
   return {
     strategyDir: config.paths.strategyDir,
     startingBalance: config.runtime.balance,
+    strategyParams: config.strategyParams,
     slippage: DEFAULT_BACKTEST_SLIPPAGE,
     feeModel: DEFAULT_BACKTEST_FEE_MODEL,
   };

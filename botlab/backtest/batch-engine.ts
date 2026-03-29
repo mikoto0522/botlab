@@ -1,6 +1,7 @@
 import type { BacktestRow } from './csv.js';
 import { calculateFee, type BacktestFeeModel } from './fees.js';
 import { createStrategyRegistry } from '../core/strategy-registry.js';
+import { getStrategyParamOverrides, resolveStrategyParams } from '../core/strategy-params.js';
 import type {
   BacktestEquityPoint,
   BacktestTrade,
@@ -15,6 +16,7 @@ export interface RunBatchBacktestInput {
   strategyId: string;
   strategyDir: string;
   startingBalance: number;
+  strategyParams?: Record<string, Record<string, unknown>>;
   slippage: number;
   feeModel: BacktestFeeModel;
   rows: BacktestRow[];
@@ -205,6 +207,7 @@ function buildRelatedMarkets(
 export async function runBatchBacktest(input: RunBatchBacktestInput): Promise<BatchBacktestResult> {
   const registry = await createStrategyRegistry(input.strategyDir);
   const strategy = registry.getById(input.strategyId);
+  const strategyParams = getStrategyParamOverrides(input.strategyParams, input.strategyId);
   const trades: BacktestTrade[] = [];
   const equityCurve: BacktestEquityPoint[] = [];
   const historyByAsset = new Map<string, BotlabCandle[]>();
@@ -257,7 +260,7 @@ export async function runBatchBacktest(input: RunBatchBacktestInput): Promise<Ba
       const previousClose = history.at(-1)?.close ?? row.upPrice;
       const relatedMarkets = buildRelatedMarkets(asset, row.timeframe, historyByAssetTimeframe, latestRowByAssetTimeframe);
       const context = buildContext(row, candles, relatedMarkets, previousClose, cash);
-      const decision = strategy.evaluate(context, structuredClone(strategy.defaults));
+      const decision = strategy.evaluate(context, resolveStrategyParams(strategy.defaults, strategyParams));
 
       if (decision.action === 'sell') {
         throw new Error(`Batch backtest strategy returned sell for row ${formatRowLabel(row, index)}`);

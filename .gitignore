@@ -1,4 +1,5 @@
 node_modules/
 dist/
 botlab/paper-sessions/
+botlab-paper-fixture-*/
 tmp-*.ts

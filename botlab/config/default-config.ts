@@ -236,9 +236,17 @@ export function loadBotlabConfig(configPath?: string, cwd = process.cwd()): Botl
   }
 
   const runtime = isRecord(parsed.runtime) ? parsed.runtime : {};
+  const strategyParams = isRecord(parsed.strategyParams)
+    ? Object.fromEntries(
+        Object.entries(parsed.strategyParams)
+          .filter(([, value]) => isRecord(value))
+          .map(([key, value]) => [key, { ...(value as Record<string, unknown>) }]),
+      )
+    : undefined;
 
   return {
     paths,
     runtime: mergeRuntimeOverrides(runtime),
+    strategyParams,
   };
 }

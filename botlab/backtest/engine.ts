@@ -1,6 +1,7 @@
 import type { BacktestRow } from './csv.js';
 import { calculateFee, type BacktestFeeModel } from './fees.js';
 import { createStrategyRegistry } from '../core/strategy-registry.js';
+import { getStrategyParamOverrides, resolveStrategyParams } from '../core/strategy-params.js';
 import type {
   BacktestEquityPoint,
   BacktestSummary,
@@ -14,6 +15,7 @@ export interface RunBacktestInput {
   strategyId: string;
   strategyDir: string;
   startingBalance: number;
+  strategyParams?: Record<string, Record<string, unknown>>;
   signalSide: Exclude<PredictionSide, 'flat'>;
   slippage: number;
   feeModel: BacktestFeeModel;
@@ -131,6 +133,7 @@ function calculateMaxDrawdownPct(equityCurve: BacktestEquityPoint[]): number {
 export async function runBacktest(input: RunBacktestInput): Promise<RunBacktestResult> {
   const registry = await createStrategyRegistry(input.strategyDir);
   const strategy = registry.getById(input.strategyId);
+  const strategyParams = getStrategyParamOverrides(input.strategyParams, input.strategyId);
   const rows = input.rows;
   const trades: BacktestTrade[] = [];
   const equityCurve: BacktestEquityPoint[] = [];
@@ -149,7 +152,7 @@ export async function runBacktest(input: RunBacktestInput): Promise<RunBacktestR
     const balance = cash + markValue;
     const candles = buildCandleWindow(rows, index, input.signalSide);
     const context = buildContext(row, candles, balance, currentShares, entryPrice);
-    const decision = strategy.evaluate(context, structuredClone(strategy.defaults));
+    const decision = strategy.evaluate(context, resolveStrategyParams(strategy.defaults, strategyParams));
 
     if (decision.action === 'buy' && currentSide === 'flat') {
       const quotedOpen = getEntryAsk(row, input.signalSide);

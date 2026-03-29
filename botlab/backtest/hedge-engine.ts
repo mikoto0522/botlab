@@ -1,6 +1,7 @@
 import type { BacktestRow } from './csv.js';
 import { calculateFee, type BacktestFeeModel } from './fees.js';
 import { createStrategyRegistry } from '../core/strategy-registry.js';
+import { getStrategyParamOverrides, resolveStrategyParams } from '../core/strategy-params.js';
 import type {
   BotlabCandle,
   BotlabHedgeContext,
@@ -14,6 +15,7 @@ export interface RunHedgeBacktestInput {
   strategyId: string;
   strategyDir: string;
   startingBalance: number;
+  strategyParams?: Record<string, Record<string, unknown>>;
   slippage: number;
   feeModel: BacktestFeeModel;
   rows: BacktestRow[];
@@ -154,17 +156,19 @@ function getHedgeDecision(
   evaluateHedge: ((context: BotlabHedgeContext, params: Record<string, unknown>) => BotlabHedgeDecision) | undefined,
   context: BotlabHedgeContext,
   defaults: Record<string, unknown>,
+  strategyParams?: Record<string, unknown>,
 ): BotlabHedgeDecision {
   if (typeof evaluateHedge !== 'function') {
     throw new Error(`Strategy ${strategyId} does not support hedge backtests`);
   }
 
-  return evaluateHedge(context, structuredClone(defaults));
+  return evaluateHedge(context, resolveStrategyParams(defaults, strategyParams));
 }
 
 export async function runHedgeBacktest(input: RunHedgeBacktestInput): Promise<HedgeBacktestResult> {
   const registry = await createStrategyRegistry(input.strategyDir);
   const strategy = registry.getById(input.strategyId);
+  const strategyParams = getStrategyParamOverrides(input.strategyParams, input.strategyId);
   const historyByAsset = new Map<string, BotlabCandle[]>();
   const lastTimestampByAsset = new Map<string, number>();
   const trades: HedgeBacktestResult['trades'] = [];
@@ -209,7 +213,7 @@ export async function runHedgeBacktest(input: RunHedgeBacktestInput): Promise<He
     }
 
     const context = buildHedgeContext(group, historyByAsset, cash);
-    const decision = getHedgeDecision(input.strategyId, strategy.evaluateHedge, context, strategy.defaults);
+    const decision = getHedgeDecision(input.strategyId, strategy.evaluateHedge, context, strategy.defaults, strategyParams);
 
     if (decision.action !== 'hedge' || !Array.isArray(decision.legs) || decision.legs.length === 0) {
       skippedGroups++;
