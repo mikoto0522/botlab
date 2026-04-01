@@ -147,7 +147,7 @@ The current `btc-eth-5m` strategy uses different rules per asset. BTC now waits 
 
 The `btc-eth-5m-aggressive` variant keeps a wider BTC fade zone and lets ETH fade a slightly wider stretch zone with a larger capped budget, so it is easier to compare a steadier version against a more aggressive one.
 
-The `btc-eth-5m-multi-signal` variant is the first bundled strategy that is tuned for prediction-market trade count as well as return. It keeps the single-market batch flow, combines a few replay-tested entry shapes, and now adds a guarded BTC replay-rescue path so BTC can take more mid-band opportunities without reopening the cheapest low-quality fades.
+The `btc-eth-5m-multi-signal` variant is now regime-aware. It first classifies each BTC or ETH setup as directional, ranging, or noisy, then only lets the matching trade family through. Continuation entries only fire in directional states, reversion entries only fire in ranging states, and noisy states stay flat. The replay paths still work in batch mode, but the live-style side now blocks the worst paper-proven entry zones before they can open.
 
 The `btc-eth-5m-pair-model` variant is the first cross-market strategy. It reads BTC and ETH together, uses BTC as the reference series, and only opens ETH trades when ETH lands in a calibrated mid-price zone and the BTC/ETH gap reaches one of the stronger historical levels.
 
@@ -155,14 +155,23 @@ The `btc-eth-5m-true-hedge` variant is the first paired strategy. It reads BTC a
 
 The current true-hedge version now allows a slightly wider upper price ceiling and a larger capped stake per leg. That makes it participate in a few more mid-quality paired setups, with the trade-off that drawdown can rise versus the stricter earlier state-based version.
 
-The latest real-data checks for `btc-eth-5m-multi-signal` were:
+The latest accepted real-data checks for `btc-eth-5m-multi-signal` were:
 
-- BTC last month: `11` trades, `+57.80%`, max drawdown `3.26%`
-- ETH last month: `48` trades, `+43.08%`, max drawdown `10.97%`
-- BTC year to date: `33` trades, `+60.06%`, max drawdown `5.15%`
-- ETH year to date: `70` trades, `+34.18%`, max drawdown `15.85%`
+- BTC last month: `10` trades, `+59.80%`, max drawdown `2.61%`
+- ETH last month: `42` trades, `+42.95%`, max drawdown `10.92%`
+- BTC year to date: `28` trades, `+70.06%`, max drawdown `3.50%`
+- ETH year to date: `57` trades, `+44.47%`, max drawdown `10.78%`
 
-That means the last-month BTC and ETH runs together now produce `59` entries while staying positive on all four real-data checks. The BTC side now trades more often than the stricter smoother version, but still stays far calmer than the earlier high-drawdown build because the replay-rescue path now refuses the ultra-cheap downside quotes that were acting like coin flips.
+That means the current accepted version stays positive on all four real-data checks while cutting back the worst paper-proven slices. BTC is now noticeably smoother year to date, and ETH still trades often enough to stay useful without reopening the weakest upside bands that were dragging paper results down.
+
+The historical verification commands used for the accepted version were:
+
+```bash
+npm run botlab -- backtest-batch --strategy=btc-eth-5m-multi-signal --data=botlab/data/polymarket-btc-5m-last-month.csv
+npm run botlab -- backtest-batch --strategy=btc-eth-5m-multi-signal --data=botlab/data/polymarket-eth-5m-last-month.csv
+npm run botlab -- backtest-batch --strategy=btc-eth-5m-multi-signal --data=botlab/data/polymarket-btc-5m-ytd.csv
+npm run botlab -- backtest-batch --strategy=btc-eth-5m-multi-signal --data=botlab/data/polymarket-eth-5m-ytd.csv
+```
 
 ## Default Config
 

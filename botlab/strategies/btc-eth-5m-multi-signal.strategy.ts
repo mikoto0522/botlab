@@ -30,6 +30,7 @@ interface BtcEthMultiSignalParams extends Record<string, unknown> {
 
 type PredictionSide = 'up' | 'down';
 type SignalFamily = 'continuation' | 'reversion' | 'relative-value';
+type MarketRegime = 'directional' | 'ranging' | 'noisy';
 type MoveBucket = 'm++' | 'm+' | 'm0' | 'm-' | 'm--';
 type AccelBucket = 'a++' | 'a+' | 'a0' | 'a-' | 'a--';
 type Sequence2 = '++' | '+-' | '-+' | '--' | '+0' | '-0' | '0+' | '0-' | '00';
@@ -49,11 +50,19 @@ interface MarketView {
   alignment: number;
   noiseRatio: number;
   stretch: number;
+  distanceFromEdge: number;
   priceBucket: number;
+  volumeQuality: number;
   moveBucket: MoveBucket;
   accelBucket: AccelBucket;
   sequence2: Sequence2;
   sequence3: Sequence3;
+}
+
+interface RegimeSummary {
+  regime: MarketRegime;
+  reason: string;
+  tags: string[];
 }
 
 interface SignalCandidate {
@@ -105,7 +114,7 @@ const REPLAY_RULES: Array<{
   {
     asset: 'BTC',
     side: 'down',
-    family: 'continuation',
+    family: 'reversion',
     score: 2.4,
     priceBucket: 8,
     sequence3: '++-',
@@ -151,7 +160,7 @@ const REPLAY_RULES: Array<{
   {
     asset: 'ETH',
     side: 'down',
-    family: 'continuation',
+    family: 'reversion',
     score: 2.05,
     priceBucket: 8,
     sequence3: '-+-',
@@ -172,7 +181,7 @@ const REPLAY_RESCUE_RULES: Array<{
   {
     asset: 'BTC',
     side: 'down',
-    family: 'continuation',
+    family: 'reversion',
     score: 1.95,
     priceBucket: 5,
     sequence2: '+-',
@@ -181,7 +190,7 @@ const REPLAY_RESCUE_RULES: Array<{
   {
     asset: 'BTC',
     side: 'down',
-    family: 'continuation',
+    family: 'reversion',
     score: 1.9,
     priceBucket: 4,
     sequence2: '-+',
@@ -332,6 +341,7 @@ function toMarketView(
   asset: 'BTC' | 'ETH',
   price: number,
   volume: number,
+  minimumVolume: number,
   candles: BotlabCandle[],
 ): MarketView {
   const moves = recentMoves(candles);
@@ -357,12 +367,117 @@ function toMarketView(
     alignment: directionAlignment(moves),
     noiseRatio: noiseRatio(moves),
     stretch,
+    distanceFromEdge: Math.min(price, 1 - price),
     priceBucket: Math.max(0, Math.min(9, Math.floor(price * 10))),
+    volumeQuality: minimumVolume <= 0 ? 1 : volume / minimumVolume,
     moveBucket: bucketMove(lastMove),
     accelBucket: bucketAcceleration(lastMove - previousMove),
     sequence2: `${encodeSign(lastMove)}${encodeSign(previousMove)}` as Sequence2,
     sequence3: `${encodeSign(lastMove)}${encodeSign(previousMove)}${encodeSign(olderMove)}`,
   };
+}
+
+function regimeTag(regime: MarketRegime): string {
+  return `regime-${regime}`;
+}
+
+function classifyRegime(view: MarketView, params: BtcEthMultiSignalParams): RegimeSummary {
+  const continuationReady = view.alignment >= params.continuationAlignmentMin
+    && Math.abs(view.netMove) >= params.continuationMoveMin
+    && view.noiseRatio <= params.maxNoiseRatio * 0.8
+    && view.distanceFromEdge >= 0.07
+    && view.volumeQuality >= 1;
+  const snapbackReady = Math.sign(view.stretch) !== 0
+    && Math.abs(view.stretch) >= params.reversionStretchMin
+    && Math.sign(view.lastMove) === -Math.sign(view.stretch)
+    && Math.abs(view.lastMove) >= view.averageMove * 0.5;
+  const noisyEnough = view.noiseRatio > params.maxNoiseRatio
+    || (view.noiseRatio > params.maxNoiseRatio * 0.8 && view.alignment < 0.72)
+    || (view.distanceFromEdge < 0.05 && Math.abs(view.netMove) < view.averageMove * 2.2);
+
+  if (snapbackReady) {
+    return {
+      regime: 'ranging',
+      reason: `${view.asset} stretched away from fair value and the latest move is snapping back`,
+      tags: [regimeTag('ranging')],
+    };
+  }
+
+  if (continuationReady) {
+    return {
+      regime: 'directional',
+      reason: `${view.asset} kept carrying in one direction without much chop`,
+      tags: [regimeTag('directional')],
+    };
+  }
+
+  if (noisyEnough) {
+    return {
+      regime: 'noisy',
+      reason: `${view.asset} is chopping around too much to trust`,
+      tags: [regimeTag('noisy')],
+    };
+  }
+
+  if (Math.abs(view.stretch) >= params.reversionStretchMin * 0.85 && view.distanceFromEdge >= 0.06) {
+    return {
+      regime: 'ranging',
+      reason: `${view.asset} is still far enough from its average to treat as a range snapback setup`,
+      tags: [regimeTag('ranging')],
+    };
+  }
+
+  return {
+    regime: 'noisy',
+    reason: `${view.asset} does not look cleanly directional or cleanly mean-reverting yet`,
+    tags: [regimeTag('noisy')],
+  };
+}
+
+function familyAllowedInRegime(family: SignalFamily, regime: MarketRegime): boolean {
+  if (regime === 'directional') {
+    return family === 'continuation';
+  }
+
+  if (regime === 'ranging') {
+    return family === 'reversion';
+  }
+
+  return false;
+}
+
+function blockedPaperSliceReason(
+  view: MarketView,
+  side: PredictionSide,
+  quotedEntryPrice: number,
+): string | undefined {
+  const entryBucket = Math.max(0, Math.min(9, Math.floor(quotedEntryPrice * 10)));
+
+  if (view.asset === 'BTC' && side === 'down' && entryBucket === 0) {
+    return 'BTC downside entries under 0.10 behaved too much like all-or-nothing tickets';
+  }
+
+  if (view.asset === 'BTC' && side === 'up' && entryBucket === 1) {
+    return 'BTC upside entries in the 0.1x zone kept leaking in the longer replay';
+  }
+
+  if (view.asset === 'BTC' && side === 'up' && entryBucket === 5) {
+    return 'BTC upside entries in the 0.5x zone were the worst middle-band slice in paper trading';
+  }
+
+  if (view.asset === 'ETH' && side === 'down' && entryBucket === 2) {
+    return 'ETH downside entries in the 0.2x zone kept giving back too much in replay';
+  }
+
+  if (view.asset === 'ETH' && side === 'down' && entryBucket === 5) {
+    return 'ETH downside entries in the 0.5x zone kept losing in paper trading';
+  }
+
+  if (view.asset === 'ETH' && side === 'up' && (entryBucket === 0 || entryBucket === 3 || entryBucket === 4 || entryBucket === 7)) {
+    return 'ETH upside entries in this zone were too dependent on a few lucky paper trades';
+  }
+
+  return undefined;
 }
 
 function findPeerMarket(
@@ -478,6 +593,13 @@ function buildReplayRescueCandidates(view: MarketView): SignalCandidate[] {
       reason: rule.reason,
       tags: ['btc-eth-5m-multi-signal', rule.family, 'replay-rescue'],
     }));
+}
+
+function filterCandidatesForRegime(
+  candidates: SignalCandidate[],
+  regime: MarketRegime,
+): SignalCandidate[] {
+  return candidates.filter((candidate) => familyAllowedInRegime(candidate.family, regime));
 }
 
 function buildContinuationCandidate(
@@ -649,13 +771,14 @@ function evaluateSingleMarket(
 
   const asset = context.market.asset as 'BTC' | 'ETH';
   const candles = context.market.candles.slice(-params.lookbackCandles);
-  const view = toMarketView(asset, context.market.price, currentVolume, candles);
+  const view = toMarketView(asset, context.market.price, currentVolume, params.minimumVolume, candles);
+  const regimeSummary = classifyRegime(view, params);
 
-  if (!replayLike && view.noiseRatio > params.maxNoiseRatio && view.alignment < 0.7) {
+  if (!replayLike && regimeSummary.regime === 'noisy') {
     return {
       action: 'hold',
-      reason: `${asset} 5m history is too noisy to trust`,
-      tags: ['btc-eth-5m-multi-signal', 'idle', 'noisy'],
+      reason: regimeSummary.reason,
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags],
     };
   }
 
@@ -668,17 +791,17 @@ function evaluateSingleMarket(
     }
   } else {
     const directRuntimeBucket = buildDirectRuntimeBucketCandidate(view);
-    if (directRuntimeBucket) {
+    if (directRuntimeBucket && familyAllowedInRegime(directRuntimeBucket.family, regimeSummary.regime)) {
       candidates.push(directRuntimeBucket);
     }
 
     const continuationCandidate = buildContinuationCandidate(view, params);
-    if (continuationCandidate) {
+    if (continuationCandidate && familyAllowedInRegime(continuationCandidate.family, regimeSummary.regime)) {
       candidates.push(continuationCandidate);
     }
 
     const reversionCandidate = buildReversionCandidate(view, params);
-    if (reversionCandidate) {
+    if (reversionCandidate && familyAllowedInRegime(reversionCandidate.family, regimeSummary.regime)) {
       candidates.push(reversionCandidate);
     }
 
@@ -694,10 +817,16 @@ function evaluateSingleMarket(
         peerAsset,
         peerMarket.price,
         runtimeVolume(peerMarket.volume, peerMarket.candles),
+        params.minimumVolume,
         peerMarket.candles.slice(-params.lookbackCandles),
       );
+      const peerRegime = classifyRegime(peerView, params);
       const relativeCandidate = buildRelativeValueCandidate(view, peerView, params);
-      if (relativeCandidate) {
+      if (
+        relativeCandidate
+        && peerRegime.regime !== 'noisy'
+        && (regimeSummary.regime === peerRegime.regime || regimeSummary.regime === 'directional' || peerRegime.regime === 'directional')
+      ) {
         candidates.push(relativeCandidate);
       }
     }
@@ -707,7 +836,7 @@ function evaluateSingleMarket(
     return {
       action: 'hold',
       reason: `${asset} 5m setup did not pass any continuation, reversion, or relative-value checks`,
-      tags: ['btc-eth-5m-multi-signal', 'idle'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags],
     };
   }
 
@@ -720,16 +849,25 @@ function evaluateSingleMarket(
     return {
       action: 'hold',
       reason: `${asset} had signals, but they were too weak or conflicted too much`,
-      tags: ['btc-eth-5m-multi-signal', 'idle', 'weak'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags, 'weak'],
     };
   }
 
   const quotedEntryPrice = effectiveEntryPrice(context.market, bestSide);
+  const blockedPaperSlice = blockedPaperSliceReason(view, bestSide, quotedEntryPrice);
+  if (blockedPaperSlice) {
+    return {
+      action: 'hold',
+      reason: blockedPaperSlice,
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags, 'paper-blocked'],
+    };
+  }
+
   if (!binaryPriceAllowed(quotedEntryPrice, params)) {
     return {
       action: 'hold',
       reason: `${asset} setup looked good, but the actual ${bestSide} entry was already too close to the binary extremes`,
-      tags: ['btc-eth-5m-multi-signal', 'idle', 'expensive-entry'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags, 'expensive-entry'],
     };
   }
 
@@ -737,7 +875,7 @@ function evaluateSingleMarket(
     return {
       action: 'hold',
       reason: 'BTC upside entry was too cheap and left too much wipeout risk for too little consistency',
-      tags: ['btc-eth-5m-multi-signal', 'idle', 'lottery-entry'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags, 'lottery-entry'],
     };
   }
 
@@ -750,7 +888,7 @@ function evaluateSingleMarket(
     return {
       action: 'hold',
       reason: 'BTC downside rescue entry was too cheap and had started behaving like a coin-flip instead of a controlled fade',
-      tags: ['btc-eth-5m-multi-signal', 'idle', 'cheap-rescue-down'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags, 'cheap-rescue-down'],
     };
   }
 
@@ -759,7 +897,7 @@ function evaluateSingleMarket(
     return {
       action: 'hold',
       reason: 'balance is too small for a meaningful trade',
-      tags: ['btc-eth-5m-multi-signal', 'idle'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...regimeSummary.tags],
     };
   }
 
@@ -768,7 +906,7 @@ function evaluateSingleMarket(
     side: bestSide,
     size,
     reason: `${asset} multi-signal chose ${bestSide} from ${summary.reasons.join('; ')}`,
-    tags: [...summary.tags, bestSide, 'entry'],
+    tags: [...summary.tags, ...regimeSummary.tags, bestSide, 'entry'],
   };
 }
 
@@ -806,20 +944,24 @@ function evaluateRelativeHedge(
     'BTC',
     btcMarket.price,
     runtimeVolume(btcMarket.volume, btcMarket.candles),
+    params.minimumVolume,
     btcMarket.candles.slice(-params.lookbackCandles),
   );
   const eth = toMarketView(
     'ETH',
     ethMarket.price,
     runtimeVolume(ethMarket.volume, ethMarket.candles),
+    params.minimumVolume,
     ethMarket.candles.slice(-params.lookbackCandles),
   );
+  const btcRegime = classifyRegime(btc, params);
+  const ethRegime = classifyRegime(eth, params);
 
-  if ((btc.noiseRatio > params.maxNoiseRatio && btc.alignment < 0.7) || (eth.noiseRatio > params.maxNoiseRatio && eth.alignment < 0.7)) {
+  if (btcRegime.regime === 'noisy' || ethRegime.regime === 'noisy') {
     return {
       action: 'hold',
       reason: 'paired path stands aside when either market looks too noisy',
-      tags: ['btc-eth-5m-multi-signal', 'idle', 'noisy'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', regimeTag('noisy')],
     };
   }
 
@@ -828,7 +970,9 @@ function evaluateRelativeHedge(
     return {
       action: 'hold',
       reason: `BTC/ETH divergence is only ${relativeGap.toFixed(2)}, so the paired path stays flat`,
-      tags: ['btc-eth-5m-multi-signal', 'idle'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...(btcRegime.regime === 'directional' || ethRegime.regime === 'directional'
+        ? [regimeTag('directional')]
+        : [regimeTag('ranging')])],
     };
   }
 
@@ -837,7 +981,9 @@ function evaluateRelativeHedge(
     return {
       action: 'hold',
       reason: 'balance is too small for a paired entry',
-      tags: ['btc-eth-5m-multi-signal', 'idle'],
+      tags: ['btc-eth-5m-multi-signal', 'idle', ...(btcRegime.regime === 'directional' || ethRegime.regime === 'directional'
+        ? [regimeTag('directional')]
+        : [regimeTag('ranging')])],
     };
   }
 
@@ -855,7 +1001,9 @@ function evaluateRelativeHedge(
         { asset: 'BTC', side: 'down', size: stake },
         { asset: 'ETH', side: 'up', size: stake },
       ],
-    tags: ['btc-eth-5m-multi-signal', 'relative-value', 'hedge'],
+    tags: ['btc-eth-5m-multi-signal', 'relative-value', 'hedge', ...(btcRegime.regime === 'directional' || ethRegime.regime === 'directional'
+      ? [regimeTag('directional')]
+      : [regimeTag('ranging')])],
   };
 }
 

@@ -1324,6 +1324,58 @@ test('multi signal continuation buys up when BTC keeps carrying cleanly through 
   assert.equal(result.decision.side, 'up');
 });
 
+test('multi signal regime directional tags a clean BTC carry as directional continuation', async () => {
+  const result = await loadMultiSignalResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.61,
+      candles: [
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.34, high: 0.37, low: 0.33, close: 0.36, volume: 1500 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.36, high: 0.41, low: 0.35, close: 0.4, volume: 1540 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.4, high: 0.46, low: 0.39, close: 0.45, volume: 1580 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.45, high: 0.52, low: 0.44, close: 0.5, volume: 1610 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.5, high: 0.58, low: 0.49, close: 0.56, volume: 1660 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.56, high: 0.62, low: 0.55, close: 0.6, volume: 1710 },
+      ],
+    },
+    relatedMarkets: [
+      {
+        asset: 'ETH',
+        symbol: 'ETH-USD-5M',
+        timeframe: '5m',
+        price: 0.49,
+        volume: 1600,
+        timestamp: '2026-03-26T09:25:00.000Z',
+        candles: [
+          { timestamp: '2026-03-26T09:00:00.000Z', open: 0.44, high: 0.46, low: 0.43, close: 0.45, volume: 1450 },
+          { timestamp: '2026-03-26T09:05:00.000Z', open: 0.45, high: 0.47, low: 0.44, close: 0.46, volume: 1480 },
+          { timestamp: '2026-03-26T09:10:00.000Z', open: 0.46, high: 0.48, low: 0.45, close: 0.47, volume: 1500 },
+          { timestamp: '2026-03-26T09:15:00.000Z', open: 0.47, high: 0.49, low: 0.46, close: 0.48, volume: 1530 },
+          { timestamp: '2026-03-26T09:20:00.000Z', open: 0.48, high: 0.5, low: 0.47, close: 0.49, volume: 1560 },
+          { timestamp: '2026-03-26T09:25:00.000Z', open: 0.49, high: 0.5, low: 0.48, close: 0.49, volume: 1600 },
+        ],
+      },
+    ],
+    position: {
+      side: 'flat',
+      size: 0,
+      entryPrice: null,
+    },
+    balance: 1000,
+    clock: {
+      now: '2026-03-26T09:30:00.000Z',
+    },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'up');
+  assert.ok(result.decision.tags?.includes('regime-directional'));
+  assert.ok(result.decision.tags?.includes('continuation'));
+  assert.equal(result.decision.tags?.includes('reversion'), false);
+});
+
 test('multi signal reversion buys down when ETH looks stretched and starts fading back', async () => {
   const result = await loadMultiSignalResult({
     market: {
@@ -1371,6 +1423,58 @@ test('multi signal reversion buys down when ETH looks stretched and starts fadin
 
   assert.equal(result.decision.action, 'buy');
   assert.equal(result.decision.side, 'down');
+});
+
+test('multi signal regime ranging tags an ETH snapback as ranging reversion', async () => {
+  const result = await loadMultiSignalResult({
+    market: {
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
+      timeframe: '5m',
+      price: 0.72,
+      candles: [
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.3, high: 0.34, low: 0.29, close: 0.33, volume: 1500 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.33, high: 0.4, low: 0.32, close: 0.39, volume: 1550 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.39, high: 0.49, low: 0.38, close: 0.48, volume: 1600 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.48, high: 0.61, low: 0.47, close: 0.59, volume: 1660 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.59, high: 0.76, low: 0.58, close: 0.74, volume: 1720 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.74, high: 0.75, low: 0.68, close: 0.69, volume: 1770 },
+      ],
+    },
+    relatedMarkets: [
+      {
+        asset: 'BTC',
+        symbol: 'BTC-USD-5M',
+        timeframe: '5m',
+        price: 0.52,
+        volume: 1650,
+        timestamp: '2026-03-26T09:25:00.000Z',
+        candles: [
+          { timestamp: '2026-03-26T09:00:00.000Z', open: 0.44, high: 0.46, low: 0.43, close: 0.45, volume: 1450 },
+          { timestamp: '2026-03-26T09:05:00.000Z', open: 0.45, high: 0.47, low: 0.44, close: 0.46, volume: 1480 },
+          { timestamp: '2026-03-26T09:10:00.000Z', open: 0.46, high: 0.49, low: 0.45, close: 0.48, volume: 1510 },
+          { timestamp: '2026-03-26T09:15:00.000Z', open: 0.48, high: 0.5, low: 0.47, close: 0.49, volume: 1540 },
+          { timestamp: '2026-03-26T09:20:00.000Z', open: 0.49, high: 0.52, low: 0.48, close: 0.51, volume: 1590 },
+          { timestamp: '2026-03-26T09:25:00.000Z', open: 0.51, high: 0.53, low: 0.5, close: 0.52, volume: 1650 },
+        ],
+      },
+    ],
+    position: {
+      side: 'flat',
+      size: 0,
+      entryPrice: null,
+    },
+    balance: 1000,
+    clock: {
+      now: '2026-03-26T09:30:00.000Z',
+    },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'down');
+  assert.ok(result.decision.tags?.includes('regime-ranging'));
+  assert.ok(result.decision.tags?.includes('reversion'));
+  assert.equal(result.decision.tags?.includes('continuation'), false);
 });
 
 test('multi signal replay model buys ETH down after an upper-band wobble that kept paying in backtests', async () => {
@@ -1675,6 +1779,51 @@ test('multi signal relative value opens a paired trade when BTC and ETH diverge 
   assert.equal(decision.legs?.[1]?.asset, 'ETH');
 });
 
+test('multi signal regime blocks relative-value hedge when either market is noisy', async () => {
+  const decision = await loadHedgeDecision('btc-eth-5m-multi-signal', [
+    {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.66,
+      volume: 1800,
+      timestamp: '2026-03-26T09:30:00.000Z',
+      candles: [
+        { timestamp: '2026-03-26T08:50:00.000Z', open: 0.28, high: 0.31, low: 0.27, close: 0.3, volume: 1500 },
+        { timestamp: '2026-03-26T08:55:00.000Z', open: 0.3, high: 0.34, low: 0.29, close: 0.33, volume: 1520 },
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.33, high: 0.38, low: 0.32, close: 0.37, volume: 1550 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.37, high: 0.43, low: 0.36, close: 0.42, volume: 1580 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.42, high: 0.49, low: 0.41, close: 0.48, volume: 1610 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.48, high: 0.56, low: 0.47, close: 0.54, volume: 1660 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.54, high: 0.61, low: 0.53, close: 0.59, volume: 1710 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.59, high: 0.65, low: 0.58, close: 0.64, volume: 1760 },
+      ],
+    },
+    {
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
+      timeframe: '5m',
+      price: 0.36,
+      volume: 1750,
+      timestamp: '2026-03-26T09:30:00.000Z',
+      candles: [
+        { timestamp: '2026-03-26T08:50:00.000Z', open: 0.44, high: 0.45, low: 0.41, close: 0.42, volume: 1450 },
+        { timestamp: '2026-03-26T08:55:00.000Z', open: 0.42, high: 0.43, low: 0.39, close: 0.4, volume: 1470 },
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.4, high: 0.45, low: 0.39, close: 0.44, volume: 1490 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.44, high: 0.45, low: 0.38, close: 0.39, volume: 1510 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.39, high: 0.46, low: 0.38, close: 0.45, volume: 1540 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.45, high: 0.46, low: 0.37, close: 0.38, volume: 1580 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.38, high: 0.47, low: 0.37, close: 0.46, volume: 1630 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.46, high: 0.47, low: 0.36, close: 0.37, volume: 1690 },
+      ],
+    },
+  ]);
+
+  assert.equal(decision.action, 'hold');
+  assert.ok(decision.tags?.includes('regime-noisy'));
+  assert.equal(decision.tags?.includes('relative-value'), false);
+});
+
 test('multi signal holds when BTC 5m history is too noisy to trust', async () => {
   const result = await loadMultiSignalResult({
     market: {
@@ -1703,6 +1852,101 @@ test('multi signal holds when BTC 5m history is too noisy to trust', async () =>
   });
 
   assert.equal(result.decision.action, 'hold');
+});
+
+test('multi signal regime noisy tags a choppy BTC tape as noisy and stays flat', async () => {
+  const result = await loadMultiSignalResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.52,
+      candles: [
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.49, high: 0.53, low: 0.48, close: 0.52, volume: 1500 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.52, high: 0.53, low: 0.47, close: 0.48, volume: 1520 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.48, high: 0.54, low: 0.47, close: 0.53, volume: 1550 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.53, high: 0.54, low: 0.46, close: 0.47, volume: 1580 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.47, high: 0.55, low: 0.46, close: 0.54, volume: 1610 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.54, high: 0.55, low: 0.45, close: 0.46, volume: 1660 },
+      ],
+    },
+    position: {
+      side: 'flat',
+      size: 0,
+      entryPrice: null,
+    },
+    balance: 1000,
+    clock: {
+      now: '2026-03-26T09:30:00.000Z',
+    },
+  });
+
+  assert.equal(result.decision.action, 'hold');
+  assert.ok(result.decision.tags?.includes('regime-noisy'));
+});
+
+test('multi signal regime blocks continuation inside a ranging snapback setup', async () => {
+  const result = await loadMultiSignalResult({
+    market: {
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
+      timeframe: '5m',
+      price: 0.72,
+      candles: [
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.3, high: 0.34, low: 0.29, close: 0.33, volume: 1500 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.33, high: 0.4, low: 0.32, close: 0.39, volume: 1550 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.39, high: 0.49, low: 0.38, close: 0.48, volume: 1600 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.48, high: 0.61, low: 0.47, close: 0.59, volume: 1660 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.59, high: 0.76, low: 0.58, close: 0.74, volume: 1720 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.74, high: 0.75, low: 0.68, close: 0.69, volume: 1770 },
+      ],
+    },
+    position: {
+      side: 'flat',
+      size: 0,
+      entryPrice: null,
+    },
+    balance: 1000,
+    clock: {
+      now: '2026-03-26T09:30:00.000Z',
+    },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.ok(result.decision.tags?.includes('regime-ranging'));
+  assert.equal(result.decision.tags?.includes('continuation'), false);
+});
+
+test('multi signal regime blocks reversion inside a directional carry setup', async () => {
+  const result = await loadMultiSignalResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.61,
+      candles: [
+        { timestamp: '2026-03-26T09:00:00.000Z', open: 0.34, high: 0.37, low: 0.33, close: 0.36, volume: 1500 },
+        { timestamp: '2026-03-26T09:05:00.000Z', open: 0.36, high: 0.41, low: 0.35, close: 0.4, volume: 1540 },
+        { timestamp: '2026-03-26T09:10:00.000Z', open: 0.4, high: 0.46, low: 0.39, close: 0.45, volume: 1580 },
+        { timestamp: '2026-03-26T09:15:00.000Z', open: 0.45, high: 0.52, low: 0.44, close: 0.5, volume: 1610 },
+        { timestamp: '2026-03-26T09:20:00.000Z', open: 0.5, high: 0.58, low: 0.49, close: 0.56, volume: 1660 },
+        { timestamp: '2026-03-26T09:25:00.000Z', open: 0.56, high: 0.62, low: 0.55, close: 0.6, volume: 1710 },
+      ],
+    },
+    position: {
+      side: 'flat',
+      size: 0,
+      entryPrice: null,
+    },
+    balance: 1000,
+    clock: {
+      now: '2026-03-26T09:30:00.000Z',
+    },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.ok(result.decision.tags?.includes('regime-directional'));
+  assert.equal(result.decision.tags?.includes('reversion'), false);
 });
 
 test('multi signal holds when ETH volume is too thin', async () => {
