@@ -18,6 +18,7 @@ Botlab is a small strategy sandbox inspired by the "framework first, strategy se
 - `btc-eth-5m-multi-signal`: a higher-frequency BTC / ETH 5m variant that blends several replay-tested entry patterns instead of leaning on one narrow setup
 - `btc-eth-5m-pair-model`: a BTC/ETH relative-value variant that uses BTC as the reference market and only opens ETH trades inside a calibrated mid-price zone
 - `btc-eth-5m-true-hedge`: a paired BTC/ETH strategy that opens both legs together when one side clearly leads the other
+- `polybot-ported`: a botlab-native port of the original polybot strategy shape that chooses direction first, then filters by strength and quoted entry quality before sizing the trade
 
 ## Commands
 
@@ -27,6 +28,8 @@ Run everything through the package script:
 npm run botlab -- list-strategies
 npm run botlab -- describe-strategy --strategy=btc-eth-5m
 npm run botlab -- run --strategy=btc-eth-5m
+npm run botlab -- describe-strategy --strategy=polybot-ported
+npm run botlab -- run --strategy=polybot-ported
 npm run botlab -- paper --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30
 npm run botlab -- describe-strategy --strategy=btc-eth-5m-aggressive
 npm run botlab -- describe-strategy --strategy=btc-eth-5m-multi-signal
@@ -34,6 +37,7 @@ npm run botlab -- describe-strategy --strategy=btc-eth-5m-pair-model
 npm run botlab -- create-strategy --name="My New Strategy"
 npm run botlab -- backtest --strategy=btc-eth-5m --data=botlab/data/polymarket-sample.csv
 npm run botlab -- backtest-batch --strategy=btc-eth-5m --data=botlab/data/polymarket-sample.csv
+npm run botlab -- backtest-batch --strategy=polybot-ported --data=botlab/data/polymarket-btc-5m-last-month.csv
 npm run botlab -- backtest-batch --strategy=btc-eth-5m-multi-signal --data=botlab/data/polymarket-eth-5m-last-month.csv
 npm run botlab -- backtest-batch --strategy=btc-eth-5m-pair-model --data=botlab/data/polymarket-btc-eth-5m-last-month.csv
 npm run botlab -- backtest-hedge --strategy=btc-eth-5m-true-hedge --data=botlab/data/polymarket-btc-eth-5m-last-month.csv
@@ -46,6 +50,8 @@ Short aliases are also available:
 npm run botlab:list
 npm run botlab:describe -- --strategy=btc-eth-5m
 npm run botlab:run -- --strategy=btc-eth-5m
+npm run botlab:describe -- --strategy=polybot-ported
+npm run botlab:run -- --strategy=polybot-ported
 npm run botlab:paper -- --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30
 npm run botlab:create -- --name="My New Strategy"
 npm run botlab:backtest -- --strategy=btc-eth-5m --data=botlab/data/polymarket-sample.csv
@@ -154,6 +160,8 @@ The `btc-eth-5m-pair-model` variant is the first cross-market strategy. It reads
 The `btc-eth-5m-true-hedge` variant is the first paired strategy. It reads BTC and ETH together, classifies the pair into trend, reversion, or noise, and only opens both legs when the pair sits in a cleaner state inside a safer price zone.
 
 The current true-hedge version now allows a slightly wider upper price ceiling and a larger capped stake per leg. That makes it participate in a few more mid-quality paired setups, with the trade-off that drawdown can rise versus the stricter earlier state-based version.
+
+The `polybot-ported` variant is the closest current bridge from the original `polybot-intraday` project into `botlab`. It does not copy the external Binance or Chainlink feeds, but it keeps the same decision order: pick a side, demand enough move strength, reject bad quoted entry prices, then size the trade by confidence.
 
 The latest accepted real-data checks for `btc-eth-5m-multi-signal` were:
 
