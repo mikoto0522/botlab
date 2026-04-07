@@ -2,6 +2,16 @@ import fs from 'node:fs/promises';
 
 export type PaperMarketAsset = 'BTC' | 'ETH';
 
+export interface PaperOrderBookLevel {
+  price: number;
+  size: number;
+}
+
+export interface PaperOutcomeOrderBook {
+  bids: PaperOrderBookLevel[];
+  asks: PaperOrderBookLevel[];
+}
+
 export interface PaperMarketRef {
   asset: PaperMarketAsset;
   slug: string;
@@ -25,6 +35,8 @@ export interface PaperMarketSnapshot {
   upAsk: number | null;
   downAsk: number | null;
   downAskDerivedFromBestBid: boolean;
+  upOrderBook?: PaperOutcomeOrderBook;
+  downOrderBook?: PaperOutcomeOrderBook;
   volume: number | null;
   fetchedAt: string;
 }
@@ -51,6 +63,7 @@ export interface PaperMarketSourceOptions {
 type RawMarketSnapshot = Record<string, unknown>;
 
 const GAMMA_API_BASE_URL = 'https://gamma-api.polymarket.com';
+const CLOB_API_BASE_URL = 'https://clob.polymarket.com';
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 function toDate(value: Date | string | number | undefined): Date {
@@ -402,6 +415,178 @@ async function requestJsonArray(fetchImpl: typeof fetch, url: string): Promise<R
   return parsed.filter((item): item is RawMarketSnapshot => typeof item === 'object' && item !== null && !Array.isArray(item));
 }
 
+async function requestJsonArrayWithInit(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  failureLabel: string,
+): Promise<RawMarketSnapshot[]> {
+  const response = await fetchImpl(url, init);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${failureLabel} from ${url}: ${response.status} ${response.statusText}`);
+  }
+
+  const parsed = await response.json() as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Failed to fetch ${failureLabel} from ${url}: response was not an array`);
+  }
+
+  return parsed.filter((item): item is RawMarketSnapshot => typeof item === 'object' && item !== null && !Array.isArray(item));
+}
+
+function normalizeOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
+  if (!Array.isArray(levels)) {
+    return [];
+  }
+
+  const normalized: PaperOrderBookLevel[] = [];
+  for (const level of levels) {
+    if (typeof level !== 'object' || level === null || Array.isArray(level)) {
+      continue;
+    }
+
+    const price = normalizeBinaryPrice(coerceNumber((level as Record<string, unknown>).price));
+    const size = coerceNumber((level as Record<string, unknown>).size);
+    if (price === null || size === null || !Number.isFinite(size) || size <= 0) {
+      continue;
+    }
+
+    normalized.push({ price, size });
+  }
+
+  return normalized;
+}
+
+function normalizeBinaryPrice(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value) || value < 0 || value > 1) {
+    return null;
+  }
+
+  return value;
+}
+
+function normalizePaperMarketDetail(
+  raw: RawMarketSnapshot,
+  marketRef: PaperMarketRef,
+  sourceDescription: string,
+): PaperMarketDetail {
+  const outcomes = readOutcomeOrder(raw.outcomes, sourceDescription);
+  const tokenIds = parseRawStringList(raw.clobTokenIds);
+
+  if (tokenIds.length !== 2) {
+    throw new Error(
+      `Failed to normalize paper market detail from ${sourceDescription}: clobTokenIds must be a 2-item array`,
+    );
+  }
+
+  const upTokenId = tokenIds[outcomes.upIndex];
+  const downTokenId = tokenIds[outcomes.downIndex];
+
+  if (!upTokenId || !downTokenId) {
+    throw new Error(
+      `Failed to normalize paper market detail from ${sourceDescription}: clobTokenIds do not match the Up/Down outcome order`,
+    );
+  }
+
+  return {
+    ...marketRef,
+    question: readRequiredString(raw, 'question', sourceDescription),
+    active: coerceBoolean(raw.active) ?? false,
+    closed: coerceBoolean(raw.closed) ?? false,
+    acceptingOrders: coerceBoolean(raw.acceptingOrders),
+    eventStartTime: coerceString(raw.eventStartTime),
+    endDate: coerceString(raw.endDate),
+    upLabel: outcomes.upLabel,
+    downLabel: outcomes.downLabel,
+    upTokenId,
+    downTokenId,
+    volume: coerceNumber(raw.volume),
+  };
+}
+
+async function fetchPaperOrderBooks(
+  detail: PaperMarketDetail,
+  fetchImpl: typeof fetch,
+): Promise<{
+  upOrderBook?: PaperOutcomeOrderBook;
+  downOrderBook?: PaperOutcomeOrderBook;
+}> {
+  const rows = await requestJsonArrayWithInit(
+    fetchImpl,
+    `${CLOB_API_BASE_URL}/books`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([
+        { token_id: detail.upTokenId },
+        { token_id: detail.downTokenId },
+      ]),
+    },
+    'paper market order books',
+  );
+
+  const booksByTokenId = new Map<string, RawMarketSnapshot>();
+  for (const row of rows) {
+    const tokenId = coerceString(row.asset_id);
+    if (!tokenId) {
+      continue;
+    }
+
+    booksByTokenId.set(tokenId, row);
+  }
+
+  const upBookRow = booksByTokenId.get(detail.upTokenId);
+  const downBookRow = booksByTokenId.get(detail.downTokenId);
+
+  return {
+    upOrderBook: upBookRow
+      ? {
+          bids: normalizeOrderBookLevels(upBookRow.bids),
+          asks: normalizeOrderBookLevels(upBookRow.asks),
+        }
+      : undefined,
+    downOrderBook: downBookRow
+      ? {
+          bids: normalizeOrderBookLevels(downBookRow.bids),
+          asks: normalizeOrderBookLevels(downBookRow.asks),
+        }
+      : undefined,
+  };
+}
+
+function attachOrderBooks(
+  snapshot: PaperMarketSnapshot,
+  orderBooks: {
+    upOrderBook?: PaperOutcomeOrderBook;
+    downOrderBook?: PaperOutcomeOrderBook;
+  },
+): PaperMarketSnapshot {
+  const nextSnapshot: PaperMarketSnapshot = {
+    ...snapshot,
+  };
+
+  if (orderBooks.upOrderBook) {
+    nextSnapshot.upOrderBook = orderBooks.upOrderBook;
+    const bestAsk = orderBooks.upOrderBook.asks[0]?.price;
+    if (typeof bestAsk === 'number' && Number.isFinite(bestAsk)) {
+      nextSnapshot.upAsk = bestAsk;
+    }
+  }
+
+  if (orderBooks.downOrderBook) {
+    nextSnapshot.downOrderBook = orderBooks.downOrderBook;
+    const bestAsk = orderBooks.downOrderBook.asks[0]?.price;
+    if (typeof bestAsk === 'number' && Number.isFinite(bestAsk)) {
+      nextSnapshot.downAsk = bestAsk;
+      nextSnapshot.downAskDerivedFromBestBid = false;
+    }
+  }
+
+  return nextSnapshot;
+}
+
 export function resolveCurrentPaperMarketRefs(now: Date | string | number = new Date()): PaperMarketRef[] {
   const bucketStart = floorToFiveMinuteBucket(now);
   const bucketStartEpoch = Math.floor(bucketStart.getTime() / 1000);
@@ -479,7 +664,7 @@ export async function fetchPaperMarketSnapshot(
     );
   }
 
-  return normalizeSnapshot(
+  const snapshot = normalizeSnapshot(
     {
       ...raw,
       fetchedAt: options.now ? toIsoString(options.now) : raw.fetchedAt,
@@ -487,6 +672,14 @@ export async function fetchPaperMarketSnapshot(
     `${marketRef.asset} live response`,
     marketRef,
   );
+
+  try {
+    const detail = normalizePaperMarketDetail(raw, marketRef, `${marketRef.asset} live response`);
+    const orderBooks = await fetchPaperOrderBooks(detail, fetchImpl);
+    return attachOrderBooks(snapshot, orderBooks);
+  } catch {
+    return snapshot;
+  }
 }
 
 export async function fetchPaperMarketDetail(
@@ -503,38 +696,7 @@ export async function fetchPaperMarketDetail(
     );
   }
 
-  const outcomes = readOutcomeOrder(raw.outcomes, `${marketRef.asset} live response`);
-  const tokenIds = parseRawStringList(raw.clobTokenIds);
-
-  if (tokenIds.length !== 2) {
-    throw new Error(
-      `Failed to normalize paper market detail from ${marketRef.asset} live response: clobTokenIds must be a 2-item array`,
-    );
-  }
-
-  const upTokenId = tokenIds[outcomes.upIndex];
-  const downTokenId = tokenIds[outcomes.downIndex];
-
-  if (!upTokenId || !downTokenId) {
-    throw new Error(
-      `Failed to normalize paper market detail from ${marketRef.asset} live response: clobTokenIds do not match the Up/Down outcome order`,
-    );
-  }
-
-  return {
-    ...marketRef,
-    question: readRequiredString(raw, 'question', `${marketRef.asset} live response`),
-    active: coerceBoolean(raw.active) ?? false,
-    closed: coerceBoolean(raw.closed) ?? false,
-    acceptingOrders: coerceBoolean(raw.acceptingOrders),
-    eventStartTime: coerceString(raw.eventStartTime),
-    endDate: coerceString(raw.endDate),
-    upLabel: outcomes.upLabel,
-    downLabel: outcomes.downLabel,
-    upTokenId,
-    downTokenId,
-    volume: coerceNumber(raw.volume),
-  };
+  return normalizePaperMarketDetail(raw, marketRef, `${marketRef.asset} live response`);
 }
 
 export function createLivePaperMarketSource(options: PaperMarketSourceOptions = {}) {

@@ -3,6 +3,7 @@ import {
   fetchPaperMarketDetail,
   type PaperMarketAsset,
   type PaperMarketDetail,
+  type PaperOrderBookLevel,
   type PaperMarketSnapshot,
 } from './market-source.js';
 
@@ -21,6 +22,8 @@ interface RealtimeTokenState {
   price: number | null;
   bestBid: number | null;
   bestAsk: number | null;
+  bids: PaperOrderBookLevel[];
+  asks: PaperOrderBookLevel[];
   fetchedAt: string;
 }
 
@@ -63,6 +66,14 @@ export interface RealtimeBestBidAskInput {
   downPrice: number;
   upAsk: number | null;
   downAsk: number | null;
+  upOrderBook?: {
+    bids: PaperOrderBookLevel[];
+    asks: PaperOrderBookLevel[];
+  };
+  downOrderBook?: {
+    bids: PaperOrderBookLevel[];
+    asks: PaperOrderBookLevel[];
+  };
   volume: number | null;
   active?: boolean;
   closed?: boolean;
@@ -144,6 +155,37 @@ function readBookLevelPrice(levels: unknown): number | null {
   return normalizeBinaryPrice(coerceNumber(first));
 }
 
+function readOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
+  if (!Array.isArray(levels)) {
+    return [];
+  }
+
+  const normalized: PaperOrderBookLevel[] = [];
+  for (const level of levels) {
+    if (Array.isArray(level)) {
+      const price = normalizeBinaryPrice(coerceNumber(level[0]));
+      const size = coerceNumber(level[1]);
+      if (price !== null && size !== null && size > 0) {
+        normalized.push({ price, size });
+      }
+      continue;
+    }
+
+    if (typeof level !== 'object' || level === null) {
+      continue;
+    }
+
+    const record = level as Record<string, unknown>;
+    const price = normalizeBinaryPrice(coerceNumber(record.price));
+    const size = coerceNumber(record.size);
+    if (price !== null && size !== null && size > 0) {
+      normalized.push({ price, size });
+    }
+  }
+
+  return normalized;
+}
+
 function createTokenState(
   asset: PaperMarketAsset,
   side: RealtimeOutcomeSide,
@@ -154,6 +196,8 @@ function createTokenState(
     price: null,
     bestBid: null,
     bestAsk: null,
+    bids: [],
+    asks: [],
     fetchedAt: new Date(0).toISOString(),
   };
 }
@@ -225,6 +269,10 @@ function looksLikeReliableBinarySnapshot(snapshot: PaperMarketSnapshot): boolean
     return false;
   }
 
+  if (!snapshot.upOrderBook || !snapshot.downOrderBook) {
+    return false;
+  }
+
   return true;
 }
 
@@ -258,6 +306,8 @@ export function ingestRealtimeBestBidAsk(
     upAsk: input.upAsk,
     downAsk: input.downAsk,
     downAskDerivedFromBestBid: false,
+    upOrderBook: input.upOrderBook,
+    downOrderBook: input.downOrderBook,
     volume: input.volume,
     fetchedAt: input.fetchedAt,
   };
@@ -323,6 +373,14 @@ function maybePublishSnapshot(
     downPrice: downTokenState.price,
     upAsk: upTokenState.bestAsk,
     downAsk: downTokenState.bestAsk,
+    upOrderBook: {
+      bids: upTokenState.bids,
+      asks: upTokenState.asks,
+    },
+    downOrderBook: {
+      bids: downTokenState.bids,
+      asks: downTokenState.asks,
+    },
     volume: metadata.detail.volume,
     active: metadata.detail.active,
     closed: metadata.detail.closed,
@@ -335,7 +393,7 @@ function maybePublishSnapshot(
 function updateTokenState(
   tokenStates: Map<string, RealtimeTokenState>,
   tokenId: string,
-  partial: Partial<Pick<RealtimeTokenState, 'price' | 'bestBid' | 'bestAsk' | 'fetchedAt'>>,
+  partial: Partial<Pick<RealtimeTokenState, 'price' | 'bestBid' | 'bestAsk' | 'bids' | 'asks' | 'fetchedAt'>>,
   metadataByTokenId: Map<string, { asset: PaperMarketAsset; side: RealtimeOutcomeSide }>,
 ): RealtimeTokenState | null {
   const metadata = metadataByTokenId.get(tokenId);
@@ -349,6 +407,8 @@ function updateTokenState(
     price: partial.price ?? current.price,
     bestBid: partial.bestBid ?? current.bestBid,
     bestAsk: partial.bestAsk ?? current.bestAsk,
+    bids: partial.bids ?? current.bids,
+    asks: partial.asks ?? current.asks,
     fetchedAt: partial.fetchedAt ?? current.fetchedAt,
   };
   tokenStates.set(tokenId, next);
@@ -371,6 +431,8 @@ function handleBookPayload(
     price: normalizeBinaryPrice(coerceNumber(payload.last_trade_price)),
     bestBid: readBookLevelPrice(payload.bids),
     bestAsk: readBookLevelPrice(payload.asks),
+    bids: readOrderBookLevels(payload.bids),
+    asks: readOrderBookLevels(payload.asks),
     fetchedAt: toIsoString(typeof payload.timestamp === 'string' ? payload.timestamp : undefined),
   }, metadataByTokenId);
 

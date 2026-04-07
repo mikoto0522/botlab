@@ -104,6 +104,7 @@ function writeParametrizedPaperStrategy(): string {
 
 function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSnapshot, 'asset' | 'slug' | 'bucketStartTime' | 'bucketStartEpoch'>): PaperMarketSnapshot {
   return {
+    ...(input as Record<string, unknown>),
     asset: input.asset,
     slug: input.slug,
     question: input.question ?? `${input.asset} 5m up/down`,
@@ -121,7 +122,7 @@ function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSn
     downAskDerivedFromBestBid: input.downAskDerivedFromBestBid ?? false,
     volume: input.volume ?? 25_000,
     fetchedAt: input.fetchedAt ?? input.bucketStartTime,
-  };
+  } as PaperMarketSnapshot;
 }
 
 test('runPaperLoop respects maxCycles, updates same-bucket history in place, and persists the open position', async () => {
@@ -571,4 +572,187 @@ test('runPaperLoop applies configured strategy parameter overrides to position s
   assert.equal(state.tradeCount, 1);
   assert.equal(state.positions.BTC?.shares, 11.69);
   assert.equal(state.cash < 95.1 && state.cash > 94.9, true);
+});
+
+test('runPaperLoop partially fills an entry when the order book cannot satisfy the requested stake', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-partial-open-'));
+  const strategyDir = writeParametrizedPaperStrategy();
+
+  await runPaperLoop({
+    sessionName: 'Partial Open Session',
+    strategyId: 'paper-param-test',
+    strategyDir,
+    cwd,
+    startingCash: 100,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 1,
+    strategyParamOverrides: {
+      stake: 100,
+    },
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        createSnapshot({
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1711443600',
+          bucketStartTime: '2026-03-26T09:00:00.000Z',
+          bucketStartEpoch: 1711443600,
+          upPrice: 0.42,
+          downPrice: 0.58,
+          upAsk: 0.43,
+          downAsk: 0.59,
+          fetchedAt: '2026-03-26T09:00:10.000Z',
+          upOrderBook: {
+            bids: [{ price: 0.41, size: 30 }],
+            asks: [
+              { price: 0.43, size: 5 },
+              { price: 0.45, size: 4 },
+            ],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.57, size: 30 }],
+            asks: [{ price: 0.59, size: 30 }],
+          },
+        } as PaperMarketSnapshot),
+        createSnapshot({
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1711443600',
+          bucketStartTime: '2026-03-26T09:00:00.000Z',
+          bucketStartEpoch: 1711443600,
+          upPrice: 0.55,
+          downPrice: 0.45,
+          upAsk: 0.57,
+          downAsk: 0.47,
+          fetchedAt: '2026-03-26T09:00:10.000Z',
+        }),
+      ],
+      getSnapshotBySlug: async (slug) => {
+        assert.fail(`unexpected slug lookup for ${slug}`);
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Partial Open Session', cwd, { startingCash: 100 });
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'Partial Open Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  const openEvent = events.find((event) => event.type === 'paper-position-opened');
+
+  assert.equal(state.positions.BTC?.shares, 9);
+  assert.equal(state.positions.BTC?.size, 9);
+  assert.equal(state.positions.BTC?.entryPrice, 0.4388888888888889);
+  assert.equal(state.cash > 95.97 && state.cash < 95.98, true);
+  assert.equal(openEvent?.requestedStake, 100);
+  assert.equal(typeof openEvent?.stake === 'number' && openEvent.stake > 4.02 && openEvent.stake < 4.03, true);
+  assert.equal(openEvent?.partialFill, true);
+  assert.equal(openEvent?.levelsConsumed, 2);
+});
+
+test('runPaperLoop partially closes a position when the order book cannot absorb all held shares', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-partial-close-'));
+  const strategyDir = writeSellStrategy();
+  let cycleIndex = 0;
+
+  const cycleSnapshots: PaperMarketSnapshot[][] = [
+    [
+      createSnapshot({
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1711443600',
+        bucketStartTime: '2026-03-26T09:00:00.000Z',
+        bucketStartEpoch: 1711443600,
+        upPrice: 0.42,
+        downPrice: 0.58,
+        upAsk: 0.43,
+        downAsk: 0.59,
+        fetchedAt: '2026-03-26T09:00:10.000Z',
+        upOrderBook: {
+          bids: [{ price: 0.41, size: 30 }],
+          asks: [
+            { price: 0.43, size: 5 },
+            { price: 0.45, size: 4 },
+          ],
+        },
+        downOrderBook: {
+          bids: [{ price: 0.57, size: 30 }],
+          asks: [{ price: 0.59, size: 30 }],
+        },
+      } as PaperMarketSnapshot),
+      createSnapshot({
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1711443600',
+        bucketStartTime: '2026-03-26T09:00:00.000Z',
+        bucketStartEpoch: 1711443600,
+        upPrice: 0.52,
+        downPrice: 0.48,
+        upAsk: 0.54,
+        downAsk: 0.5,
+        fetchedAt: '2026-03-26T09:00:10.000Z',
+      }),
+    ],
+    [
+      createSnapshot({
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1711443900',
+        bucketStartTime: '2026-03-26T09:05:00.000Z',
+        bucketStartEpoch: 1711443900,
+        upPrice: 0.61,
+        downPrice: 0.39,
+        upAsk: 0.63,
+        downAsk: 0.41,
+        fetchedAt: '2026-03-26T09:05:10.000Z',
+        upOrderBook: {
+          bids: [{ price: 0.61, size: 4 }],
+          asks: [{ price: 0.63, size: 30 }],
+        },
+        downOrderBook: {
+          bids: [{ price: 0.39, size: 30 }],
+          asks: [{ price: 0.41, size: 30 }],
+        },
+      } as PaperMarketSnapshot),
+      createSnapshot({
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1711443900',
+        bucketStartTime: '2026-03-26T09:05:00.000Z',
+        bucketStartEpoch: 1711443900,
+        upPrice: 0.49,
+        downPrice: 0.51,
+        upAsk: 0.51,
+        downAsk: 0.53,
+        fetchedAt: '2026-03-26T09:05:10.000Z',
+      }),
+    ],
+  ];
+
+  await runPaperLoop({
+    sessionName: 'Partial Close Session',
+    strategyId: 'paper-sell-test',
+    strategyDir,
+    cwd,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 2,
+    marketSource: {
+      getCurrentSnapshots: async () => cycleSnapshots[cycleIndex++]!.map((snapshot) => ({ ...snapshot })),
+      getSnapshotBySlug: async (slug) => {
+        const match = cycleSnapshots.flat().find((snapshot) => snapshot.slug === slug);
+        assert.ok(match, `unexpected slug lookup for ${slug}`);
+        return { ...match };
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Partial Close Session', cwd);
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'Partial Close Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  const closeEvent = events.find((event) => event.type === 'paper-position-closed');
+
+  assert.equal(state.positions.BTC?.shares, 5);
+  assert.equal(state.positions.BTC?.size, 5);
+  assert.equal((state.positions.BTC?.entryFee ?? 0) > 0.0388 && (state.positions.BTC?.entryFee ?? 0) < 0.039, true);
+  assert.equal(state.tradeCount, 1);
+  assert.equal(closeEvent?.shares, 4);
+  assert.equal(closeEvent?.partialFill, true);
+  assert.equal(closeEvent?.remainingShares, 5);
+  assert.equal(closeEvent?.levelsConsumed, 1);
 });

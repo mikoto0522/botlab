@@ -375,11 +375,15 @@ function appendOpenEvents(
       asset: item.asset,
       marketSlug: item.marketSlug,
       side: item.side,
+      requestedStake: item.requestedStake,
       shares: item.shares,
       stake: item.stake,
       entryPrice: item.entryPrice,
       entryFee: item.entryFee,
       totalCost: item.totalCost,
+      partialFill: item.partialFill,
+      levelsConsumed: item.levelsConsumed,
+      fills: item.fills,
     }, cwd);
   }
 }
@@ -396,11 +400,16 @@ function appendCloseEvents(
       asset: item.asset,
       marketSlug: item.marketSlug,
       side: item.side,
+      requestedShares: item.requestedShares,
       shares: item.shares,
+      remainingShares: item.remainingShares,
       entryPrice: item.entryPrice,
       exitPrice: item.exitPrice,
       feesPaid: item.feesPaid,
       realizedPnl: item.realizedPnl,
+      partialFill: item.partialFill,
+      levelsConsumed: item.levelsConsumed,
+      fills: item.fills,
     }, cwd);
   }
 }
@@ -533,7 +542,12 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           const position = state.positions[asset];
           if (hasOpenPaperPosition(position)) {
             const closed = closePaperPosition(state, asset, position, snapshot, feeModel, cycleTimestamp);
-            closedThisCycle.push(closed);
+            if (closed) {
+              closedThisCycle.push(closed);
+            }
+            if (hasOpenPaperPosition(state.positions[asset])) {
+              openMarks[asset] = snapshot;
+            }
           }
           continue;
         }
