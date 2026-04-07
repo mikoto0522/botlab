@@ -41,6 +41,10 @@ type TempConfigRuntime = {
     symbol: string;
     timeframe: string;
     price?: number;
+    upPrice?: number;
+    downPrice?: number;
+    upAsk?: number;
+    downAsk?: number;
     volume: number;
     timestamp: string;
     candles: Array<{
@@ -422,6 +426,10 @@ async function loadMultiSignalResult(runtime: TempConfigRuntime) {
 
 async function loadPolybotPortedResult(runtime: TempConfigRuntime) {
   return loadStrategyResult('polybot-ported', runtime);
+}
+
+async function loadExtremeReversalResult(runtime: TempConfigRuntime) {
+  return loadStrategyResult('extreme-reversal-5m', runtime);
 }
 
 async function loadDirectStrategyDecision(strategyId: string, runtime: TempConfigRuntime) {
@@ -1409,6 +1417,210 @@ test('polybot port sizes stronger setups larger than weaker ones', async () => {
   assert.equal(weak.action, 'buy');
   assert.equal(strong.action, 'buy');
   assert.ok((strong.size ?? 0) > (weak.size ?? 0));
+});
+
+test('extreme reversal buys up after an extreme low quote turns and ETH confirms', async () => {
+  const result = await loadExtremeReversalResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.1,
+      upPrice: 0.1,
+      downPrice: 0.9,
+      upAsk: 0.1,
+      downAsk: 0.91,
+      volume: 1800,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.24, high: 0.25, low: 0.18, close: 0.2, volume: 1500 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.2, high: 0.21, low: 0.13, close: 0.15, volume: 1600 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.15, high: 0.16, low: 0.09, close: 0.11, volume: 1680 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.11, high: 0.12, low: 0.06, close: 0.07, volume: 1720 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.07, high: 0.11, low: 0.06, close: 0.1, volume: 1800 },
+      ],
+    },
+    relatedMarkets: [
+      {
+        asset: 'ETH',
+        symbol: 'ETH-USD-5M',
+        timeframe: '5m',
+        price: 0.18,
+        upPrice: 0.18,
+        downPrice: 0.82,
+        upAsk: 0.18,
+        downAsk: 0.83,
+        volume: 1700,
+        timestamp: '2026-04-07T11:30:00.000Z',
+        candles: [
+          { timestamp: '2026-04-07T11:05:00.000Z', open: 0.28, high: 0.29, low: 0.22, close: 0.24, volume: 1400 },
+          { timestamp: '2026-04-07T11:10:00.000Z', open: 0.24, high: 0.25, low: 0.18, close: 0.2, volume: 1450 },
+          { timestamp: '2026-04-07T11:15:00.000Z', open: 0.2, high: 0.21, low: 0.15, close: 0.16, volume: 1500 },
+          { timestamp: '2026-04-07T11:20:00.000Z', open: 0.16, high: 0.17, low: 0.11, close: 0.12, volume: 1600 },
+          { timestamp: '2026-04-07T11:25:00.000Z', open: 0.12, high: 0.19, low: 0.11, close: 0.18, volume: 1700 },
+        ],
+      },
+    ],
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:30:00.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'up');
+});
+
+test('extreme reversal buys down after an extreme high quote fades and BTC confirms', async () => {
+  const result = await loadExtremeReversalResult({
+    market: {
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
+      timeframe: '5m',
+      price: 0.92,
+      upPrice: 0.92,
+      downPrice: 0.08,
+      upAsk: 0.93,
+      downAsk: 0.08,
+      volume: 1800,
+      timestamp: '2026-04-07T12:00:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:35:00.000Z', open: 0.74, high: 0.8, low: 0.73, close: 0.78, volume: 1500 },
+        { timestamp: '2026-04-07T11:40:00.000Z', open: 0.78, high: 0.84, low: 0.77, close: 0.83, volume: 1580 },
+        { timestamp: '2026-04-07T11:45:00.000Z', open: 0.83, high: 0.88, low: 0.82, close: 0.87, volume: 1660 },
+        { timestamp: '2026-04-07T11:50:00.000Z', open: 0.87, high: 0.95, low: 0.86, close: 0.94, volume: 1740 },
+        { timestamp: '2026-04-07T11:55:00.000Z', open: 0.94, high: 0.95, low: 0.9, close: 0.92, volume: 1800 },
+      ],
+    },
+    relatedMarkets: [
+      {
+        asset: 'BTC',
+        symbol: 'BTC-USD-5M',
+        timeframe: '5m',
+        price: 0.86,
+        upPrice: 0.86,
+        downPrice: 0.14,
+        upAsk: 0.87,
+        downAsk: 0.14,
+        volume: 1750,
+        timestamp: '2026-04-07T12:00:00.000Z',
+        candles: [
+          { timestamp: '2026-04-07T11:35:00.000Z', open: 0.68, high: 0.73, low: 0.67, close: 0.72, volume: 1450 },
+          { timestamp: '2026-04-07T11:40:00.000Z', open: 0.72, high: 0.78, low: 0.71, close: 0.77, volume: 1500 },
+          { timestamp: '2026-04-07T11:45:00.000Z', open: 0.77, high: 0.83, low: 0.76, close: 0.82, volume: 1580 },
+          { timestamp: '2026-04-07T11:50:00.000Z', open: 0.82, high: 0.89, low: 0.81, close: 0.88, volume: 1660 },
+          { timestamp: '2026-04-07T11:55:00.000Z', open: 0.88, high: 0.89, low: 0.84, close: 0.86, volume: 1750 },
+        ],
+      },
+    ],
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T12:00:00.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'down');
+});
+
+test('extreme reversal holds when the related market still disagrees', async () => {
+  const result = await loadExtremeReversalResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.09,
+      upPrice: 0.09,
+      downPrice: 0.91,
+      upAsk: 0.09,
+      downAsk: 0.92,
+      volume: 1800,
+      timestamp: '2026-04-07T12:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T12:05:00.000Z', open: 0.26, high: 0.27, low: 0.2, close: 0.21, volume: 1500 },
+        { timestamp: '2026-04-07T12:10:00.000Z', open: 0.21, high: 0.22, low: 0.15, close: 0.16, volume: 1560 },
+        { timestamp: '2026-04-07T12:15:00.000Z', open: 0.16, high: 0.17, low: 0.1, close: 0.11, volume: 1650 },
+        { timestamp: '2026-04-07T12:20:00.000Z', open: 0.11, high: 0.12, low: 0.05, close: 0.06, volume: 1720 },
+        { timestamp: '2026-04-07T12:25:00.000Z', open: 0.06, high: 0.1, low: 0.05, close: 0.09, volume: 1800 },
+      ],
+    },
+    relatedMarkets: [
+      {
+        asset: 'ETH',
+        symbol: 'ETH-USD-5M',
+        timeframe: '5m',
+        price: 0.11,
+        upPrice: 0.11,
+        downPrice: 0.89,
+        upAsk: 0.11,
+        downAsk: 0.9,
+        volume: 1700,
+        timestamp: '2026-04-07T12:30:00.000Z',
+        candles: [
+          { timestamp: '2026-04-07T12:05:00.000Z', open: 0.24, high: 0.25, low: 0.18, close: 0.19, volume: 1450 },
+          { timestamp: '2026-04-07T12:10:00.000Z', open: 0.19, high: 0.2, low: 0.13, close: 0.14, volume: 1500 },
+          { timestamp: '2026-04-07T12:15:00.000Z', open: 0.14, high: 0.15, low: 0.08, close: 0.09, volume: 1560 },
+          { timestamp: '2026-04-07T12:20:00.000Z', open: 0.09, high: 0.1, low: 0.04, close: 0.05, volume: 1620 },
+          { timestamp: '2026-04-07T12:25:00.000Z', open: 0.05, high: 0.06, low: 0.02, close: 0.03, volume: 1700 },
+        ],
+      },
+    ],
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T12:30:00.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'hold');
+  assert.match(result.decision.reason, /related|confirm/i);
+});
+
+test('extreme reversal holds when the quoted entry is not extreme enough', async () => {
+  const result = await loadExtremeReversalResult({
+    market: {
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
+      timeframe: '5m',
+      price: 0.15,
+      upPrice: 0.15,
+      downPrice: 0.85,
+      upAsk: 0.15,
+      downAsk: 0.86,
+      volume: 1600,
+      timestamp: '2026-04-07T13:00:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T12:35:00.000Z', open: 0.28, high: 0.29, low: 0.22, close: 0.23, volume: 1400 },
+        { timestamp: '2026-04-07T12:40:00.000Z', open: 0.23, high: 0.24, low: 0.17, close: 0.18, volume: 1450 },
+        { timestamp: '2026-04-07T12:45:00.000Z', open: 0.18, high: 0.19, low: 0.12, close: 0.13, volume: 1500 },
+        { timestamp: '2026-04-07T12:50:00.000Z', open: 0.13, high: 0.14, low: 0.08, close: 0.09, volume: 1550 },
+        { timestamp: '2026-04-07T12:55:00.000Z', open: 0.09, high: 0.16, low: 0.08, close: 0.15, volume: 1600 },
+      ],
+    },
+    relatedMarkets: [
+      {
+        asset: 'BTC',
+        symbol: 'BTC-USD-5M',
+        timeframe: '5m',
+        price: 0.19,
+        upPrice: 0.19,
+        downPrice: 0.81,
+        upAsk: 0.19,
+        downAsk: 0.82,
+        volume: 1650,
+        timestamp: '2026-04-07T13:00:00.000Z',
+        candles: [
+          { timestamp: '2026-04-07T12:35:00.000Z', open: 0.29, high: 0.3, low: 0.23, close: 0.24, volume: 1420 },
+          { timestamp: '2026-04-07T12:40:00.000Z', open: 0.24, high: 0.25, low: 0.18, close: 0.19, volume: 1470 },
+          { timestamp: '2026-04-07T12:45:00.000Z', open: 0.19, high: 0.2, low: 0.13, close: 0.14, volume: 1520 },
+          { timestamp: '2026-04-07T12:50:00.000Z', open: 0.14, high: 0.15, low: 0.09, close: 0.1, volume: 1580 },
+          { timestamp: '2026-04-07T12:55:00.000Z', open: 0.1, high: 0.2, low: 0.09, close: 0.19, volume: 1650 },
+        ],
+      },
+    ],
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T13:00:00.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'hold');
+  assert.match(result.decision.reason, /extreme|cheap|price/i);
 });
 
 test('multi signal continuation buys up when BTC keeps carrying cleanly through the middle zone', async () => {

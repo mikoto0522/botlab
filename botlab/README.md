@@ -19,6 +19,7 @@ Botlab is a small strategy sandbox inspired by the "framework first, strategy se
 - `btc-eth-5m-pair-model`: a BTC/ETH relative-value variant that uses BTC as the reference market and only opens ETH trades inside a calibrated mid-price zone
 - `btc-eth-5m-true-hedge`: a paired BTC/ETH strategy that opens both legs together when one side clearly leads the other
 - `polybot-ported`: a botlab-native port of the original polybot strategy shape that chooses direction first, then filters by strength and quoted entry quality before sizing the trade
+- `extreme-reversal-5m`: a very small-stake BTC/ETH 5m reversal strategy that only enters after an extreme quote, a local turn, and related-market confirmation
 
 ## Commands
 
@@ -30,6 +31,8 @@ npm run botlab -- describe-strategy --strategy=btc-eth-5m
 npm run botlab -- run --strategy=btc-eth-5m
 npm run botlab -- describe-strategy --strategy=polybot-ported
 npm run botlab -- run --strategy=polybot-ported
+npm run botlab -- describe-strategy --strategy=extreme-reversal-5m
+npm run botlab -- paper --strategy=extreme-reversal-5m --session=my-paper --interval=30 --config=botlab/config/paper-100u-5u.json
 npm run botlab -- paper --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30
 npm run botlab -- describe-strategy --strategy=btc-eth-5m-aggressive
 npm run botlab -- describe-strategy --strategy=btc-eth-5m-multi-signal
@@ -52,6 +55,7 @@ npm run botlab:describe -- --strategy=btc-eth-5m
 npm run botlab:run -- --strategy=btc-eth-5m
 npm run botlab:describe -- --strategy=polybot-ported
 npm run botlab:run -- --strategy=polybot-ported
+npm run botlab:describe -- --strategy=extreme-reversal-5m
 npm run botlab:paper -- --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30
 npm run botlab:create -- --name="My New Strategy"
 npm run botlab:backtest -- --strategy=btc-eth-5m --data=botlab/data/polymarket-sample.csv
@@ -162,6 +166,8 @@ The `btc-eth-5m-true-hedge` variant is the first paired strategy. It reads BTC a
 The current true-hedge version now allows a slightly wider upper price ceiling and a larger capped stake per leg. That makes it participate in a few more mid-quality paired setups, with the trade-off that drawdown can rise versus the stricter earlier state-based version.
 
 The `polybot-ported` variant is the closest current bridge from the original `polybot-intraday` project into `botlab`. It does not copy the external Binance or Chainlink feeds, but it keeps the same decision order: pick a side, demand enough move strength, reject bad quoted entry prices, then size the trade by confidence.
+
+The `extreme-reversal-5m` variant is a paper-first tail reversal idea. It does not try to buy every cheap side. Instead, it waits for an extreme quoted price, a first local turn, and a same-timeframe BTC/ETH confirmation before taking a small entry.
 
 The latest accepted real-data checks for `btc-eth-5m-multi-signal` were:
 
