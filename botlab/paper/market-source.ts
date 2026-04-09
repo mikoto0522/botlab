@@ -68,6 +68,7 @@ type RawMarketSnapshot = Record<string, unknown>;
 const GAMMA_API_BASE_URL = 'https://gamma-api.polymarket.com';
 const CLOB_API_BASE_URL = 'https://clob.polymarket.com';
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const OFFICIAL_PRICE_SPREAD_THRESHOLD = 0.1;
 
 function toDate(value: Date | string | number | undefined): Date {
   if (value instanceof Date) {
@@ -437,6 +438,25 @@ async function requestJsonArrayWithInit(
   return parsed.filter((item): item is RawMarketSnapshot => typeof item === 'object' && item !== null && !Array.isArray(item));
 }
 
+async function requestJsonRecordWithInit(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  failureLabel: string,
+): Promise<Record<string, unknown>> {
+  const response = await fetchImpl(url, init);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${failureLabel} from ${url}: ${response.status} ${response.statusText}`);
+  }
+
+  const parsed = await response.json() as unknown;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Failed to fetch ${failureLabel} from ${url}: response was not an object`);
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
 function normalizeOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
   if (!Array.isArray(levels)) {
     return [];
@@ -589,9 +609,6 @@ function attachOrderBooks(
     if (typeof bestAsk === 'number' && Number.isFinite(bestAsk)) {
       nextSnapshot.upAsk = bestAsk;
     }
-    if (typeof orderBooks.upOrderBook.lastTradePrice === 'number' && Number.isFinite(orderBooks.upOrderBook.lastTradePrice)) {
-      nextSnapshot.upPrice = orderBooks.upOrderBook.lastTradePrice;
-    }
   }
 
   if (orderBooks.downOrderBook) {
@@ -601,12 +618,152 @@ function attachOrderBooks(
       nextSnapshot.downAsk = bestAsk;
       nextSnapshot.downAskDerivedFromBestBid = false;
     }
-    if (typeof orderBooks.downOrderBook.lastTradePrice === 'number' && Number.isFinite(orderBooks.downOrderBook.lastTradePrice)) {
-      nextSnapshot.downPrice = orderBooks.downOrderBook.lastTradePrice;
-    }
   }
 
   return nextSnapshot;
+}
+
+function parseMappedTokenPrice(
+  rawMap: Record<string, unknown>,
+  tokenId: string,
+): number | null {
+  return normalizeBinaryPrice(coerceNumber(rawMap[tokenId]));
+}
+
+function parseLastTradePriceMap(rows: RawMarketSnapshot[]): Map<string, number> {
+  const prices = new Map<string, number>();
+
+  for (const row of rows) {
+    const tokenId = coerceString(row.token_id);
+    const price = normalizeBinaryPrice(coerceNumber(row.price));
+    if (!tokenId || price === null) {
+      continue;
+    }
+
+    prices.set(tokenId, price);
+  }
+
+  return prices;
+}
+
+function selectOfficialDisplayPrice(input: {
+  midpoint: number | null;
+  spread: number | null;
+  lastTradePrice: number | null;
+}): number | null {
+  if (
+    input.midpoint !== null
+    && input.spread !== null
+    && input.spread <= OFFICIAL_PRICE_SPREAD_THRESHOLD
+  ) {
+    return input.midpoint;
+  }
+
+  if (input.lastTradePrice !== null) {
+    return input.lastTradePrice;
+  }
+
+  return input.midpoint;
+}
+
+function normalizeBinaryDisplayPair(
+  upPrice: number | null,
+  downPrice: number | null,
+): { upPrice: number | null; downPrice: number | null } {
+  if (upPrice !== null && downPrice !== null && Math.abs((upPrice + downPrice) - 1) <= 0.08) {
+    return { upPrice, downPrice };
+  }
+
+  if (upPrice !== null) {
+    return {
+      upPrice,
+      downPrice: normalizeBinaryPrice(1 - upPrice),
+    };
+  }
+
+  if (downPrice !== null) {
+    return {
+      upPrice: normalizeBinaryPrice(1 - downPrice),
+      downPrice,
+    };
+  }
+
+  return { upPrice: null, downPrice: null };
+}
+
+async function fetchOfficialDisplayPrices(
+  detail: PaperMarketDetail,
+  fetchImpl: typeof fetch,
+): Promise<{ upPrice: number | null; downPrice: number | null }> {
+  const requestBody = JSON.stringify([
+    { token_id: detail.upTokenId },
+    { token_id: detail.downTokenId },
+  ]);
+
+  const [midpoints, spreads, lastTrades] = await Promise.all([
+    requestJsonRecordWithInit(
+      fetchImpl,
+      `${CLOB_API_BASE_URL}/midpoints`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: requestBody,
+      },
+      'paper market midpoint prices',
+    ),
+    requestJsonRecordWithInit(
+      fetchImpl,
+      `${CLOB_API_BASE_URL}/spreads`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: requestBody,
+      },
+      'paper market spreads',
+    ),
+    requestJsonArrayWithInit(
+      fetchImpl,
+      `${CLOB_API_BASE_URL}/last-trades-prices`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: requestBody,
+      },
+      'paper market last trade prices',
+    ),
+  ]);
+
+  const lastTradePrices = parseLastTradePriceMap(lastTrades);
+  const upPrice = selectOfficialDisplayPrice({
+    midpoint: parseMappedTokenPrice(midpoints, detail.upTokenId),
+    spread: parseMappedTokenPrice(spreads, detail.upTokenId),
+    lastTradePrice: lastTradePrices.get(detail.upTokenId) ?? null,
+  });
+  const downPrice = selectOfficialDisplayPrice({
+    midpoint: parseMappedTokenPrice(midpoints, detail.downTokenId),
+    spread: parseMappedTokenPrice(spreads, detail.downTokenId),
+    lastTradePrice: lastTradePrices.get(detail.downTokenId) ?? null,
+  });
+
+  return normalizeBinaryDisplayPair(upPrice, downPrice);
+}
+
+function fallbackDisplayPricesFromOrderBooks(
+  snapshot: PaperMarketSnapshot,
+): { upPrice: number | null; downPrice: number | null } {
+  const upLastTrade = snapshot.upOrderBook?.lastTradePrice ?? null;
+  const downLastTrade = snapshot.downOrderBook?.lastTradePrice ?? null;
+
+  return normalizeBinaryDisplayPair(
+    upLastTrade ?? snapshot.upPrice,
+    downLastTrade ?? snapshot.downPrice,
+  );
 }
 
 export function resolveCurrentPaperMarketRefs(now: Date | string | number = new Date()): PaperMarketRef[] {
@@ -715,7 +872,23 @@ export async function fetchPaperMarketSnapshot(
   try {
     const detail = normalizePaperMarketDetail(raw, marketRef, `${marketRef.asset} live response`);
     const orderBooks = await fetchPaperOrderBooks(detail, fetchImpl);
-    return attachOrderBooks(snapshot, orderBooks);
+    const withOrderBooks = attachOrderBooks(snapshot, orderBooks);
+
+    try {
+      const officialDisplayPrices = await fetchOfficialDisplayPrices(detail, fetchImpl);
+      return {
+        ...withOrderBooks,
+        upPrice: officialDisplayPrices.upPrice ?? withOrderBooks.upPrice,
+        downPrice: officialDisplayPrices.downPrice ?? withOrderBooks.downPrice,
+      };
+    } catch {
+      const fallbackDisplayPrices = fallbackDisplayPricesFromOrderBooks(withOrderBooks);
+      return {
+        ...withOrderBooks,
+        upPrice: fallbackDisplayPrices.upPrice ?? withOrderBooks.upPrice,
+        downPrice: fallbackDisplayPrices.downPrice ?? withOrderBooks.downPrice,
+      };
+    }
   } catch {
     return snapshot;
   }

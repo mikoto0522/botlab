@@ -398,6 +398,113 @@ test('fetchPaperMarketSnapshot prefers the latest real trade from the order book
   assert.equal(snapshot.downPrice, 0.96);
 });
 
+test('fetchPaperMarketSnapshot uses the official midpoint display rule before falling back to stale last trades', async () => {
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down - March 29, 10:50AM-10:55AM UTC',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          endDate: '2026-03-29T10:55:00.000Z',
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          outcomePrices: '["0.50","0.50"]',
+          bestAsk: '["0.99","0.99"]',
+          fetchedAt: '2026-03-29T10:53:27.000Z',
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/books')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            asset_id: 'btc-up-token',
+            bids: [],
+            asks: [{ price: '0.99', size: '50' }],
+            last_trade_price: '0.69',
+          },
+          {
+            asset_id: 'btc-down-token',
+            bids: [],
+            asks: [{ price: '0.99', size: '50' }],
+            last_trade_price: '0.69',
+          },
+        ]),
+      } as Response;
+    }
+
+    if (url.endsWith('/midpoints')) {
+      assert.equal(init?.method, 'POST');
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          'btc-up-token': '0.04',
+          'btc-down-token': '0.96',
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/spreads')) {
+      assert.equal(init?.method, 'POST');
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          'btc-up-token': '0.02',
+          'btc-down-token': '0.02',
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/last-trades-prices')) {
+      assert.equal(init?.method, 'POST');
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          { token_id: 'btc-up-token', price: '0.69', side: 'BUY' },
+          { token_id: 'btc-down-token', price: '0.69', side: 'BUY' },
+        ]),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  }) as typeof fetch;
+
+  const snapshot = await fetchPaperMarketSnapshot(
+    {
+      asset: 'BTC',
+      slug: 'btc-updown-5m-1774781400',
+      bucketStartTime: '2026-03-29T10:50:00.000Z',
+      bucketStartEpoch: 1774781400,
+    },
+    {
+      fetchImpl: fakeFetch,
+      now: '2026-03-29T10:53:27.000Z',
+    },
+  );
+
+  assert.equal(snapshot.upPrice, 0.04);
+  assert.equal(snapshot.downPrice, 0.96);
+});
+
 test('fetchPaperMarketSnapshot rejects bad live snapshots missing outcomes', async () => {
   const fakeFetch: typeof fetch = (async () =>
     ({
