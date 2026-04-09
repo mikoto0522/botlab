@@ -33,6 +33,7 @@ npm run botlab -- describe-strategy --strategy=polybot-ported
 npm run botlab -- run --strategy=polybot-ported
 npm run botlab -- describe-strategy --strategy=extreme-reversal-5m
 npm run botlab -- paper --strategy=extreme-reversal-5m --session=my-paper --interval=30 --config=botlab/config/paper-100u-5u.json
+npm run botlab -- live --strategy=polybot-ported --session=my-live --interval=30 --stake=1 --config=botlab/config/paper-100u-5u.json
 npm run botlab -- paper --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30
 npm run botlab -- describe-strategy --strategy=btc-eth-5m-aggressive
 npm run botlab -- describe-strategy --strategy=btc-eth-5m-multi-signal
@@ -57,6 +58,7 @@ npm run botlab:describe -- --strategy=polybot-ported
 npm run botlab:run -- --strategy=polybot-ported
 npm run botlab:describe -- --strategy=extreme-reversal-5m
 npm run botlab:paper -- --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30
+npm run botlab:live -- --strategy=polybot-ported --session=my-live --interval=30 --stake=1 --config=botlab/config/paper-100u-5u.json
 npm run botlab:create -- --name="My New Strategy"
 npm run botlab:backtest -- --strategy=btc-eth-5m --data=botlab/data/polymarket-sample.csv
 npm run botlab:backtest:batch -- --strategy=btc-eth-5m --data=botlab/data/polymarket-sample.csv
@@ -128,6 +130,36 @@ Use it like this:
 ```bash
 npm run botlab -- paper --strategy=btc-eth-5m-multi-signal --session=my-paper --interval=30 --config=botlab/config/paper-100u-5u.json
 ```
+
+## Live Trading
+
+Live trading reuses the same decision loop shape as paper trading, but places real Polymarket orders instead of writing local paper fills.
+
+Set these environment variables first:
+
+- `POLYMARKET_PRIVATE_KEY`: your wallet private key
+- `POLYMARKET_FUNDER_ADDRESS`: the wallet address that actually holds the funds
+- `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`: optional, if you already have saved API credentials
+
+Optional overrides:
+
+- `POLYMARKET_HOST`: defaults to `https://clob.polymarket.com`
+- `POLYMARKET_CHAIN_ID`: defaults to `137`
+- `POLYMARKET_SIGNATURE_TYPE`: defaults to `0` for a normal wallet key
+
+Run a live session like this:
+
+```bash
+npm run botlab -- live --strategy=polybot-ported --session=my-live --interval=30 --stake=1 --config=botlab/config/paper-100u-5u.json
+```
+
+Each named live session gets its own folder under `botlab/live-sessions/` with:
+
+- `state.json`: the latest local wallet view and any open live positions
+- `summary.json`: the latest live session snapshot
+- `events.jsonl`: append-only decision, open, close, settle, and error records
+
+If you rerun the same live session name, Botlab resumes that local session record instead of starting over.
 
 ## Real Month Data
 

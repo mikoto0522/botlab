@@ -9,6 +9,7 @@ import { loadBotlabConfig } from './config/default-config.js';
 import { createStrategyCommand } from './commands/create-strategy.js';
 import { describeStrategyCommand } from './commands/describe-strategy.js';
 import { listStrategiesCommand } from './commands/list-strategies.js';
+import { liveCommand } from './commands/live.js';
 import { paperCommand } from './commands/paper.js';
 import { runStrategyCommand } from './commands/run-strategy.js';
 
@@ -46,7 +47,7 @@ function getBacktestSide(args: string[]): BacktestSide {
 
 function requireCommand(command: string | undefined): string {
   if (!command) {
-    throw new Error('Missing command. Use list-strategies, describe-strategy, create-strategy, run, paper, backtest, backtest-batch, backtest-hedge, or analyze-hedge.');
+    throw new Error('Missing command. Use list-strategies, describe-strategy, create-strategy, run, paper, live, backtest, backtest-batch, backtest-hedge, or analyze-hedge.');
   }
 
   return command;
@@ -116,6 +117,38 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       intervalSeconds: intervalValue,
       maxCycles,
       fixturePath,
+    }));
+    return;
+  }
+
+  if (command === 'live') {
+    const strategyId = getFlagValue(argv, 'strategy');
+    if (!strategyId) {
+      throw new Error('Missing required flag --strategy=<id>.');
+    }
+
+    const sessionName = getFlagValue(argv, 'session') ?? 'default-live';
+    const intervalValue = Number(getFlagValue(argv, 'interval') ?? '30');
+    if (!Number.isFinite(intervalValue) || intervalValue < 0) {
+      throw new Error('Invalid --interval value. Use a non-negative number of seconds.');
+    }
+
+    const maxCyclesValue = getFlagValue(argv, 'max-cycles');
+    const parsedMaxCycles = maxCyclesValue === undefined ? undefined : Number(maxCyclesValue);
+    if (parsedMaxCycles !== undefined && (!Number.isInteger(parsedMaxCycles) || parsedMaxCycles < 1)) {
+      throw new Error('Invalid --max-cycles value. Use a positive whole number.');
+    }
+
+    const stakeValue = Number(getFlagValue(argv, 'stake') ?? '1');
+    if (!Number.isFinite(stakeValue) || stakeValue <= 0) {
+      throw new Error('Invalid --stake value. Use a positive number of USDC.');
+    }
+
+    console.log(await liveCommand(strategyId, config, {
+      sessionName,
+      intervalSeconds: intervalValue,
+      maxCycles: parsedMaxCycles,
+      stakeUsd: stakeValue,
     }));
     return;
   }

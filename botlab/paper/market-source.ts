@@ -53,6 +53,8 @@ export interface PaperMarketDetail extends PaperMarketRef {
   upTokenId: string;
   downTokenId: string;
   volume: number | null;
+  tickSize: '0.1' | '0.01' | '0.001' | '0.0001';
+  negRisk: boolean;
 }
 
 export interface PaperMarketSourceOptions {
@@ -488,6 +490,9 @@ function normalizePaperMarketDetail(
     );
   }
 
+  const tickSize = coerceString(raw.minimum_tick_size);
+  const negRisk = coerceBoolean(raw.neg_risk);
+
   return {
     ...marketRef,
     question: readRequiredString(raw, 'question', sourceDescription),
@@ -501,6 +506,10 @@ function normalizePaperMarketDetail(
     upTokenId,
     downTokenId,
     volume: coerceNumber(raw.volume),
+    tickSize: tickSize === '0.1' || tickSize === '0.01' || tickSize === '0.001' || tickSize === '0.0001'
+      ? tickSize
+      : '0.01',
+    negRisk: negRisk ?? false,
   };
 }
 

@@ -10,6 +10,7 @@
     "botlab:describe": "tsx botlab/cli.ts describe-strategy",
     "botlab:run": "tsx botlab/cli.ts run",
     "botlab:paper": "tsx botlab/cli.ts paper",
+    "botlab:live": "tsx botlab/cli.ts live",
     "botlab:backtest": "tsx botlab/cli.ts backtest",
     "botlab:backtest:batch": "tsx botlab/cli.ts backtest-batch",
     "botlab:backtest:hedge": "tsx botlab/cli.ts backtest-hedge",
@@ -22,5 +23,9 @@
     "@types/node": "^24.5.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@ethersproject/wallet": "^5.8.0",
+    "@polymarket/clob-client": "^5.8.1"
   }
 }
