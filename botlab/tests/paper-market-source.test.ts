@@ -321,11 +321,81 @@ test('fetchPaperMarketSnapshot enriches the snapshot with full order book depth 
       { price: 0.53, size: 8 },
       { price: 0.55, size: 4 },
     ],
+    lastTradePrice: null,
   });
   assert.deepEqual(snapshot.downOrderBook, {
     bids: [{ price: 0.47, size: 9 }],
     asks: [{ price: 0.49, size: 7 }],
+    lastTradePrice: null,
   });
+});
+
+test('fetchPaperMarketSnapshot prefers the latest real trade from the order book feed when the market snapshot is stale', async () => {
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down - March 29, 10:50AM-10:55AM UTC',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          endDate: '2026-03-29T10:55:00.000Z',
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          outcomePrices: '["0.50","0.50"]',
+          bestAsk: '["0.99","0.99"]',
+          fetchedAt: '2026-03-29T10:53:27.000Z',
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/books')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            asset_id: 'btc-up-token',
+            bids: [],
+            asks: [],
+            last_trade_price: '0.04',
+          },
+          {
+            asset_id: 'btc-down-token',
+            bids: [],
+            asks: [],
+            last_trade_price: '0.96',
+          },
+        ]),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  }) as typeof fetch;
+
+  const snapshot = await fetchPaperMarketSnapshot(
+    {
+      asset: 'BTC',
+      slug: 'btc-updown-5m-1774781400',
+      bucketStartTime: '2026-03-29T10:50:00.000Z',
+      bucketStartEpoch: 1774781400,
+    },
+    {
+      fetchImpl: fakeFetch,
+      now: '2026-03-29T10:53:27.000Z',
+    },
+  );
+
+  assert.equal(snapshot.upPrice, 0.04);
+  assert.equal(snapshot.downPrice, 0.96);
 });
 
 test('fetchPaperMarketSnapshot rejects bad live snapshots missing outcomes', async () => {

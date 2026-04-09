@@ -10,6 +10,7 @@ export interface PaperOrderBookLevel {
 export interface PaperOutcomeOrderBook {
   bids: PaperOrderBookLevel[];
   asks: PaperOrderBookLevel[];
+  lastTradePrice?: number | null;
 }
 
 export interface PaperMarketRef {
@@ -459,6 +460,10 @@ function normalizeOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
   return normalized;
 }
 
+function normalizeOptionalBinaryPrice(value: unknown): number | null {
+  return normalizeBinaryPrice(coerceNumber(value));
+}
+
 function normalizeBinaryPrice(value: number | null): number | null {
   if (value === null || !Number.isFinite(value) || value < 0 || value > 1) {
     return null;
@@ -554,12 +559,14 @@ async function fetchPaperOrderBooks(
       ? {
           bids: normalizeOrderBookLevels(upBookRow.bids),
           asks: normalizeOrderBookLevels(upBookRow.asks),
+          lastTradePrice: normalizeOptionalBinaryPrice(upBookRow.last_trade_price),
         }
       : undefined,
     downOrderBook: downBookRow
       ? {
           bids: normalizeOrderBookLevels(downBookRow.bids),
           asks: normalizeOrderBookLevels(downBookRow.asks),
+          lastTradePrice: normalizeOptionalBinaryPrice(downBookRow.last_trade_price),
         }
       : undefined,
   };
@@ -582,6 +589,9 @@ function attachOrderBooks(
     if (typeof bestAsk === 'number' && Number.isFinite(bestAsk)) {
       nextSnapshot.upAsk = bestAsk;
     }
+    if (typeof orderBooks.upOrderBook.lastTradePrice === 'number' && Number.isFinite(orderBooks.upOrderBook.lastTradePrice)) {
+      nextSnapshot.upPrice = orderBooks.upOrderBook.lastTradePrice;
+    }
   }
 
   if (orderBooks.downOrderBook) {
@@ -590,6 +600,9 @@ function attachOrderBooks(
     if (typeof bestAsk === 'number' && Number.isFinite(bestAsk)) {
       nextSnapshot.downAsk = bestAsk;
       nextSnapshot.downAskDerivedFromBestBid = false;
+    }
+    if (typeof orderBooks.downOrderBook.lastTradePrice === 'number' && Number.isFinite(orderBooks.downOrderBook.lastTradePrice)) {
+      nextSnapshot.downPrice = orderBooks.downOrderBook.lastTradePrice;
     }
   }
 
