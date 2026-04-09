@@ -93,6 +93,23 @@ function sanitizePrivateKey(privateKey: string): string {
   return privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
 }
 
+export function normalizeCollateralBalance(rawBalance: string): number {
+  const parsed = Number.parseFloat(rawBalance);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Received an invalid collateral balance from Polymarket: ${rawBalance}`);
+  }
+
+  if (rawBalance.includes('.') || rawBalance.includes('e') || rawBalance.includes('E')) {
+    return parsed;
+  }
+
+  if (parsed >= 100_000) {
+    return parsed / 1_000_000;
+  }
+
+  return parsed;
+}
+
 function requireEnv(name: string, value: string | undefined): string {
   if (!value || value.trim().length === 0) {
     throw new Error(`Missing required environment variable ${name}.`);
@@ -205,12 +222,7 @@ export async function createPolymarketLiveTradingClient(
       const response = await tradingClient.getBalanceAllowance({
         asset_type: AssetType.COLLATERAL,
       });
-      const balance = Number.parseFloat(response.balance);
-      if (!Number.isFinite(balance) || balance < 0) {
-        throw new Error(`Received an invalid collateral balance from Polymarket: ${response.balance}`);
-      }
-
-      return balance;
+      return normalizeCollateralBalance(response.balance);
     },
     async buyOutcome(input) {
       const response = await tradingClient.createAndPostMarketOrder(

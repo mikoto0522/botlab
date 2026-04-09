@@ -72,6 +72,47 @@ test('discoverActivePaperMarketRefs keeps one active BTC and one active ETH 5m m
   ]);
 });
 
+test('discoverActivePaperMarketRefs prefers the current 5m bucket instead of a newer future bucket that is already active', async () => {
+  const fakeFetch: typeof fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ([
+        {
+          slug: 'btc-updown-5m-1774781400',
+          active: true,
+          closed: false,
+        },
+        {
+          slug: 'btc-updown-5m-1774781700',
+          active: true,
+          closed: false,
+        },
+        {
+          slug: 'eth-updown-5m-1774781400',
+          active: true,
+          closed: false,
+        },
+        {
+          slug: 'eth-updown-5m-1774781700',
+          active: true,
+          closed: false,
+        },
+      ]),
+    }) as Response) as typeof fetch;
+
+  const refs = await discoverActivePaperMarketRefs({
+    fetchImpl: fakeFetch,
+    now: '2026-03-29T10:53:27.000Z',
+  });
+
+  assert.deepEqual(refs.map((ref) => ref.slug), [
+    'btc-updown-5m-1774781400',
+    'eth-updown-5m-1774781400',
+  ]);
+});
+
 test('fetchPaperMarketSnapshot normalizes string prices and asks into numbers', async () => {
   const fakeFetch: typeof fetch = (async () =>
     ({

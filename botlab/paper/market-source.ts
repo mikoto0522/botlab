@@ -622,7 +622,11 @@ export async function discoverActivePaperMarketRefs(
 ): Promise<PaperMarketRef[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const rows = await requestJsonArray(fetchImpl, `${GAMMA_API_BASE_URL}/markets`);
-  const discovered = new Map<PaperMarketAsset, PaperMarketRef>();
+  const discovered = new Map<PaperMarketAsset, PaperMarketRef[]>();
+  const currentRefs = resolveCurrentPaperMarketRefs(options.now);
+  const currentEpochByAsset = new Map<PaperMarketAsset, number>(
+    currentRefs.map((ref) => [ref.asset, ref.bucketStartEpoch]),
+  );
 
   for (const row of rows) {
     const slug = coerceString(row.slug);
@@ -639,24 +643,37 @@ export async function discoverActivePaperMarketRefs(
       continue;
     }
 
-    const current = discovered.get(asset);
-    if (current && current.bucketStartEpoch >= bucketStartEpoch) {
-      continue;
-    }
-
-    discovered.set(asset, {
+    const candidates = discovered.get(asset) ?? [];
+    candidates.push({
       asset,
       slug,
       bucketStartEpoch,
       bucketStartTime: new Date(bucketStartEpoch * 1000).toISOString(),
     });
+    discovered.set(asset, candidates);
   }
 
   if (discovered.has('BTC') && discovered.has('ETH')) {
-    return [discovered.get('BTC')!, discovered.get('ETH')!];
+    return (['BTC', 'ETH'] as const).map((asset) => {
+      const currentEpoch = currentEpochByAsset.get(asset) ?? 0;
+      const candidates = discovered.get(asset) ?? [];
+      const exactCurrent = candidates.find((candidate) => candidate.bucketStartEpoch === currentEpoch);
+      if (exactCurrent) {
+        return exactCurrent;
+      }
+
+      const priorOrCurrent = candidates
+        .filter((candidate) => candidate.bucketStartEpoch <= currentEpoch)
+        .sort((left, right) => right.bucketStartEpoch - left.bucketStartEpoch)[0];
+      if (priorOrCurrent) {
+        return priorOrCurrent;
+      }
+
+      return [...candidates].sort((left, right) => left.bucketStartEpoch - right.bucketStartEpoch)[0]!;
+    });
   }
 
-  return resolveCurrentPaperMarketRefs(options.now);
+  return currentRefs;
 }
 
 export async function fetchPaperMarketSnapshot(
