@@ -30,13 +30,18 @@ function formatDecisionSummary(report: {
   asset: string;
   action: string;
   side?: string;
+  marketSlug?: string;
   upPrice: number | null;
   downPrice: number | null;
+  upAsk?: number | null;
+  downAsk?: number | null;
 }): string {
-  const prices = `up=${report.upPrice ?? 'n/a'} down=${report.downPrice ?? 'n/a'}`;
+  const prices = `price up=${report.upPrice ?? 'n/a'} down=${report.downPrice ?? 'n/a'}`;
+  const asks = `ask up=${report.upAsk ?? 'n/a'} down=${report.downAsk ?? 'n/a'}`;
+  const marketSlug = report.marketSlug ? ` ${report.marketSlug}` : '';
   const side = report.side === 'flat' ? '' : ` ${report.side}`;
 
-  return `${report.asset} ${report.action}${side} (${prices})`;
+  return `${report.asset}${marketSlug} ${report.action}${side} (${prices}; ${asks})`;
 }
 
 function logPaperCycle(report: PaperCycleReport): void {

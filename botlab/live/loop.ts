@@ -84,6 +84,8 @@ export interface LiveCycleDecisionSummary {
   marketSlug: string;
   upPrice: number | null;
   downPrice: number | null;
+  upAsk: number | null;
+  downAsk: number | null;
 }
 
 export interface LiveCycleReport {
@@ -693,6 +695,8 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
           marketSlug: snapshot.slug,
           upPrice: snapshot.upPrice,
           downPrice: snapshot.downPrice,
+          upAsk: snapshot.upAsk,
+          downAsk: snapshot.downAsk,
         });
         appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
 

@@ -72,6 +72,8 @@ export interface PaperCycleDecisionSummary {
   marketSlug: string;
   upPrice: number | null;
   downPrice: number | null;
+  upAsk: number | null;
+  downAsk: number | null;
 }
 
 export interface PaperCycleReport {
@@ -534,6 +536,8 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           marketSlug: snapshot.slug,
           upPrice: snapshot.upPrice,
           downPrice: snapshot.downPrice,
+          upAsk: snapshot.upAsk,
+          downAsk: snapshot.downAsk,
         });
 
         appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
