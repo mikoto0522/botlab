@@ -63,6 +63,141 @@ function writeLiveSellStrategy(): string {
   return strategyDir;
 }
 
+function writeLiveHoldStrategy(): string {
+  const strategyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-live-hold-strategy-'));
+  const strategyPath = path.join(strategyDir, 'live-hold.strategy.ts');
+
+  fs.writeFileSync(
+    strategyPath,
+    [
+      'export const strategy = {',
+      "  id: 'live-hold-test',",
+      "  name: 'Live Hold Test',",
+      "  description: 'Never trades so the live balance sync can be asserted.',",
+      '  defaults: {},',
+      '  evaluate() {',
+      "    return { action: 'hold', reason: 'do nothing' };",
+      '  },',
+      '};',
+      '',
+    ].join('\n'),
+  );
+
+  return strategyDir;
+}
+
+test('runLiveLoop syncs the live collateral balance instead of keeping the configured starting cash', async () => {
+  const { runLiveLoop } = await import('../live/loop.js');
+  const { loadLiveSessionState } = await import('../live/session-store.js');
+  const strategyDir = writeLiveHoldStrategy();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-live-balance-'));
+
+  await runLiveLoop({
+    sessionName: 'Live Balance Session',
+    strategyId: 'live-hold-test',
+    strategyDir,
+    cwd,
+    startingCash: 100,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 1,
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        {
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1775649600',
+          question: 'Bitcoin Up or Down - live balance',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:00:00.000Z',
+          endDate: '2026-04-08T12:05:00.000Z',
+          bucketStartTime: '2026-04-08T12:00:00.000Z',
+          bucketStartEpoch: 1775649600,
+          upPrice: 0.52,
+          downPrice: 0.48,
+          upAsk: 0.53,
+          downAsk: 0.49,
+          upOrderBook: {
+            bids: [{ price: 0.52, size: 50 }],
+            asks: [{ price: 0.53, size: 50 }],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.48, size: 50 }],
+            asks: [{ price: 0.49, size: 50 }],
+          },
+          volume: 1500,
+          fetchedAt: '2026-04-08T12:01:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+        {
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1775649600',
+          question: 'Ethereum Up or Down - live balance',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:00:00.000Z',
+          endDate: '2026-04-08T12:05:00.000Z',
+          bucketStartTime: '2026-04-08T12:00:00.000Z',
+          bucketStartEpoch: 1775649600,
+          upPrice: 0.5,
+          downPrice: 0.5,
+          upAsk: 0.51,
+          downAsk: 0.51,
+          upOrderBook: {
+            bids: [{ price: 0.5, size: 50 }],
+            asks: [{ price: 0.51, size: 50 }],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.5, size: 50 }],
+            asks: [{ price: 0.51, size: 50 }],
+          },
+          volume: 1500,
+          fetchedAt: '2026-04-08T12:01:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+      ],
+      getSnapshotBySlug: async () => {
+        throw new Error('unexpected snapshot lookup');
+      },
+      getMarketDetail: async (slug, asset) => ({
+        asset,
+        slug,
+        question: `${asset} detail`,
+        active: true,
+        closed: false,
+        acceptingOrders: true,
+        eventStartTime: '2026-04-08T12:00:00.000Z',
+        endDate: '2026-04-08T12:05:00.000Z',
+        bucketStartTime: '2026-04-08T12:00:00.000Z',
+        bucketStartEpoch: 1775649600,
+        upLabel: 'Up',
+        downLabel: 'Down',
+        upTokenId: `${asset.toLowerCase()}-up-token`,
+        downTokenId: `${asset.toLowerCase()}-down-token`,
+        volume: 1500,
+        tickSize: '0.01',
+        negRisk: false,
+      }),
+    },
+    tradingClient: {
+      getCollateralBalance: async () => 30.25,
+      buyOutcome: async () => {
+        throw new Error('unexpected buy call');
+      },
+      sellOutcome: async () => {
+        throw new Error('unexpected sell call');
+      },
+    },
+  });
+
+  const state = loadLiveSessionState('Live Balance Session', cwd, { startingCash: 100 });
+
+  assert.equal(state.cash, 30.25);
+  assert.equal(state.equity, 30.25);
+});
+
 test('runLiveLoop opens a live position and records the real fill', async () => {
   const { runLiveLoop } = await import('../live/loop.js');
   const { loadLiveSessionState } = await import('../live/session-store.js');
@@ -70,6 +205,7 @@ test('runLiveLoop opens a live position and records the real fill', async () => 
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-live-open-'));
   const strategyDir = writeLiveBuyStrategy();
   const buyCalls: Array<Record<string, unknown>> = [];
+  const balances = [10, 9];
 
   const result = await runLiveLoop({
     sessionName: 'Live Open Session',
@@ -162,6 +298,7 @@ test('runLiveLoop opens a live position and records the real fill', async () => 
       }),
     },
     tradingClient: {
+      getCollateralBalance: async () => balances.shift() ?? 9,
       buyOutcome: async (input) => {
         buyCalls.push(input as unknown as Record<string, unknown>);
         return {
@@ -203,6 +340,7 @@ test('runLiveLoop closes a live position through the trading client on a later c
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-live-close-'));
   const strategyDir = writeLiveSellStrategy();
   const sellCalls: Array<Record<string, unknown>> = [];
+  const balances = [10, 9, 9, 10.2308];
   let cycleIndex = 0;
 
   const cycleSnapshots: PaperMarketSnapshot[][] = [
@@ -358,6 +496,7 @@ test('runLiveLoop closes a live position through the trading client on a later c
       }),
     },
     tradingClient: {
+      getCollateralBalance: async () => balances.shift() ?? 10.2308,
       buyOutcome: async (input) => ({
         orderId: 'buy-order-2',
         status: 'matched',

@@ -1,5 +1,6 @@
 import { Wallet } from '@ethersproject/wallet';
 import {
+  AssetType,
   ClobClient,
   OrderType,
   Side,
@@ -55,6 +56,7 @@ export interface LiveSellOrderResult {
 }
 
 export interface LiveTradingClient {
+  getCollateralBalance(): Promise<number>;
   buyOutcome(input: LiveBuyOrderRequest): Promise<LiveBuyOrderResult | null>;
   sellOutcome(input: LiveSellOrderRequest): Promise<LiveSellOrderResult | null>;
 }
@@ -199,6 +201,17 @@ export async function createPolymarketLiveTradingClient(
   );
 
   return {
+    async getCollateralBalance() {
+      const response = await tradingClient.getBalanceAllowance({
+        asset_type: AssetType.COLLATERAL,
+      });
+      const balance = Number.parseFloat(response.balance);
+      if (!Number.isFinite(balance) || balance < 0) {
+        throw new Error(`Received an invalid collateral balance from Polymarket: ${response.balance}`);
+      }
+
+      return balance;
+    },
     async buyOutcome(input) {
       const response = await tradingClient.createAndPostMarketOrder(
         {

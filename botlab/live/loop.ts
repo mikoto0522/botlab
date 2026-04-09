@@ -70,6 +70,12 @@ export interface LiveLoopResult {
   settledCount: number;
 }
 
+async function syncLiveCashBalance(state: LiveSessionState, tradingClient: LiveTradingClient): Promise<number> {
+  const liveCash = await tradingClient.getCollateralBalance();
+  state.cash = liveCash;
+  return liveCash;
+}
+
 export interface LiveCycleDecisionSummary {
   asset: LiveSessionAsset;
   action: BotlabStrategyDecision['action'];
@@ -645,6 +651,7 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
     let cycleTimestamp = new Date().toISOString();
 
     try {
+      await syncLiveCashBalance(state, input.tradingClient);
       const currentSnapshots = await input.marketSource.getCurrentSnapshots();
       const { byAsset: snapshotsByAsset, bySlug: snapshotsBySlug } = createSnapshotMaps(currentSnapshots);
       cycleTimestamp = toCycleTimestamp(currentSnapshots);
@@ -817,6 +824,7 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
 
       state.cycleCount += 1;
       settledCount += settledThisCycle.length;
+      await syncLiveCashBalance(state, input.tradingClient);
       state.equity = calculatePaperSessionEquity(state, openMarks);
 
       saveLiveSessionState(state, input.cwd);
