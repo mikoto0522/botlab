@@ -325,6 +325,7 @@ test('runLiveLoop opens a live position and records the real fill', async () => 
   assert.equal(result.cyclesCompleted, 1);
   assert.equal(buyCalls.length, 1);
   assert.equal(buyCalls[0]?.amount, 1);
+  assert.equal(buyCalls[0]?.priceLimit, 0.54);
   assert.equal(state.tradeCount, 1);
   assert.equal(state.positions.BTC?.predictionSide, 'up');
   assert.equal(state.positions.BTC?.shares, 1.88);
@@ -530,6 +531,7 @@ test('runLiveLoop closes a live position through the trading client on a later c
 
   assert.equal(sellCalls.length, 1);
   assert.equal(sellCalls[0]?.shares, 1.88);
+  assert.equal(sellCalls[0]?.priceLimit, 0.65);
   assert.equal(state.positions.BTC, undefined);
   assert.equal(events.some((event) => event.type === 'live-position-closed'), true);
   assert.equal(state.cash > 10.22, true);

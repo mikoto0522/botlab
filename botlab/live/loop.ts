@@ -37,6 +37,7 @@ import type {
 const DEFAULT_STRATEGY_ID = 'polybot-ported';
 const DEFAULT_FEE_MODEL: BacktestFeeModel = 'polymarket-2026-03-26';
 const DEFAULT_STAKE_OVERRIDE_USD = 1;
+const DEFAULT_MAX_PRICE_SLIPPAGE_PCT = 0.02;
 const LIVE_TIMEFRAME = '5m';
 const MAX_CONTEXT_CANDLES = 128;
 
@@ -57,6 +58,7 @@ export interface RunLiveLoopInput {
   intervalMs?: number;
   maxCycles?: number;
   stakeOverrideUsd?: number;
+  maxPriceSlippagePct?: number;
   sleepMs?: (delayMs: number) => Promise<void>;
   onCycleReport?: (report: LiveCycleReport) => void | Promise<void>;
   marketSource: LiveLoopMarketSource;
@@ -545,6 +547,117 @@ function previewSellExecution(
   };
 }
 
+function clampBinaryPrice(price: number): number {
+  if (!Number.isFinite(price)) {
+    return 0;
+  }
+
+  return Math.min(1, Math.max(0, price));
+}
+
+function parseTickSize(tickSize: PaperMarketDetail['tickSize']): number | null {
+  const parsed = Number.parseFloat(String(tickSize));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function countTickDecimals(tickSize: PaperMarketDetail['tickSize']): number {
+  const normalized = String(tickSize).trim();
+  if (!normalized.includes('.')) {
+    return 0;
+  }
+
+  return normalized.split('.')[1]!.replace(/0+$/, '').length;
+}
+
+function roundPriceToTick(
+  rawPrice: number,
+  tickSize: PaperMarketDetail['tickSize'],
+  direction: 'up' | 'down',
+): number {
+  const tick = parseTickSize(tickSize);
+  const clamped = clampBinaryPrice(rawPrice);
+  if (!tick) {
+    return clamped;
+  }
+
+  const scaled = direction === 'down'
+    ? Math.floor((clamped + 1e-9) / tick) * tick
+    : Math.ceil((clamped - 1e-9) / tick) * tick;
+
+  return clampBinaryPrice(Number(scaled.toFixed(countTickDecimals(tickSize))));
+}
+
+function withBuySlippageLimit(
+  preview: LiveBuyPreview,
+  tickSize: PaperMarketDetail['tickSize'],
+  maxPriceSlippagePct: number,
+): { priceLimit: number; preview: LiveBuyPreview } | null {
+  const anchorPrice = preview.fills[0]?.price ?? preview.avgPrice;
+  if (!isFinitePositiveNumber(anchorPrice)) {
+    return null;
+  }
+
+  const priceLimit = roundPriceToTick(anchorPrice * (1 + maxPriceSlippagePct), tickSize, 'down');
+  const fills = preview.fills.filter((fill) => fill.price <= priceLimit + 1e-9);
+  const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
+  if (!isFinitePositiveNumber(shares)) {
+    return null;
+  }
+
+  const grossCost = fills.reduce((sum, fill) => sum + fill.grossAmount, 0);
+  const totalFee = fills.reduce((sum, fill) => sum + fill.fee, 0);
+
+  return {
+    priceLimit,
+    preview: {
+      requestedStake: preview.requestedStake,
+      shares,
+      avgPrice: grossCost / shares,
+      totalCost: grossCost + totalFee,
+      totalFee,
+      partialFill: preview.requestedStake - (grossCost + totalFee) > 1e-9,
+      levelsConsumed: fills.length,
+      fills,
+    },
+  };
+}
+
+function withSellSlippageLimit(
+  preview: LiveSellPreview,
+  tickSize: PaperMarketDetail['tickSize'],
+  maxPriceSlippagePct: number,
+): { priceLimit: number; preview: LiveSellPreview } | null {
+  const anchorPrice = preview.fills[0]?.price ?? preview.avgPrice;
+  if (!Number.isFinite(anchorPrice) || anchorPrice < 0) {
+    return null;
+  }
+
+  const priceLimit = roundPriceToTick(anchorPrice * (1 - maxPriceSlippagePct), tickSize, 'up');
+  const fills = preview.fills.filter((fill) => fill.price + 1e-9 >= priceLimit);
+  const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
+  if (!isFinitePositiveNumber(shares)) {
+    return null;
+  }
+
+  const proceeds = fills.reduce((sum, fill) => sum + fill.grossAmount, 0);
+  const totalFee = fills.reduce((sum, fill) => sum + fill.fee, 0);
+
+  return {
+    priceLimit,
+    preview: {
+      requestedShares: preview.requestedShares,
+      shares,
+      remainingShares: floorShares(Math.max(0, preview.requestedShares - shares)),
+      avgPrice: proceeds / shares,
+      proceeds,
+      totalFee,
+      partialFill: shares + 1e-9 < preview.requestedShares,
+      levelsConsumed: fills.length,
+      fills,
+    },
+  };
+}
+
 function applyLiveOpenFill(
   state: LiveSessionState,
   asset: LiveSessionAsset,
@@ -640,6 +753,9 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
   const intervalMs = Math.max(0, input.intervalMs ?? 30_000);
   const sleepMs = input.sleepMs ?? defaultSleep;
   const stakeOverrideUsd = Math.max(0, input.stakeOverrideUsd ?? DEFAULT_STAKE_OVERRIDE_USD);
+  const maxPriceSlippagePct = Number.isFinite(input.maxPriceSlippagePct) && input.maxPriceSlippagePct !== undefined
+    ? Math.max(0, input.maxPriceSlippagePct)
+    : DEFAULT_MAX_PRICE_SLIPPAGE_PCT;
   const registry = await createStrategyRegistry(input.strategyDir);
   const strategy = registry.getById(strategyId);
   const strategyParams = resolveStrategyParams(strategy.defaults, input.strategyParamOverrides);
@@ -715,16 +831,23 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
           }
 
           const detail = await input.marketSource.getMarketDetail(position.marketSlug ?? snapshot.slug, asset);
+          const limitedSell = withSellSlippageLimit(preview, detail.tickSize, maxPriceSlippagePct);
+          if (!limitedSell) {
+            if (hasOpenPaperPosition(state.positions[asset])) {
+              openMarks[asset] = snapshot;
+            }
+            continue;
+          }
           const tokenId = position.predictionSide === 'up' ? detail.upTokenId : detail.downTokenId;
           const fill = await input.tradingClient.sellOutcome({
             tokenId,
-            shares: preview.shares,
-            priceLimit: preview.fills.at(-1)?.price ?? preview.avgPrice,
+            shares: limitedSell.preview.shares,
+            priceLimit: limitedSell.priceLimit,
             tickSize: detail.tickSize,
             negRisk: detail.negRisk,
-            expectedGrossProceeds: preview.proceeds,
-            expectedAveragePrice: preview.avgPrice,
-            expectedFeesPaid: preview.totalFee,
+            expectedGrossProceeds: limitedSell.preview.proceeds,
+            expectedAveragePrice: limitedSell.preview.avgPrice,
+            expectedFeesPaid: limitedSell.preview.totalFee,
           });
 
           if (!fill) {
@@ -785,17 +908,21 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
         }
 
         const detail = await input.marketSource.getMarketDetail(snapshot.slug, asset);
+        const limitedBuy = withBuySlippageLimit(preview, detail.tickSize, maxPriceSlippagePct);
+        if (!limitedBuy) {
+          continue;
+        }
         const tokenId = side === 'up' ? detail.upTokenId : detail.downTokenId;
         const fill = await input.tradingClient.buyOutcome({
           tokenId,
           amount: requestedStake,
-          priceLimit: preview.fills.at(-1)?.price ?? preview.avgPrice,
+          priceLimit: limitedBuy.priceLimit,
           tickSize: detail.tickSize,
           negRisk: detail.negRisk,
-          expectedTotalCost: preview.totalCost,
-          expectedShares: preview.shares,
-          expectedAveragePrice: preview.avgPrice,
-          expectedFeesPaid: preview.totalFee,
+          expectedTotalCost: limitedBuy.preview.totalCost,
+          expectedShares: limitedBuy.preview.shares,
+          expectedAveragePrice: limitedBuy.preview.avgPrice,
+          expectedFeesPaid: limitedBuy.preview.totalFee,
         });
 
         if (!fill) {
