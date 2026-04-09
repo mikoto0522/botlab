@@ -68,6 +68,25 @@ export interface PolymarketLiveCredentials {
   apiCreds?: ApiKeyCreds;
 }
 
+function describeSignatureType(signatureType: SignatureType): string {
+  if (signatureType === SignatureType.POLY_PROXY) {
+    return 'POLY_PROXY';
+  }
+  if (signatureType === SignatureType.POLY_GNOSIS_SAFE) {
+    return 'POLY_GNOSIS_SAFE';
+  }
+
+  return 'EOA';
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 function sanitizePrivateKey(privateKey: string): string {
   return privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
 }
@@ -130,7 +149,38 @@ export async function createPolymarketLiveTradingClient(
     true,
   );
 
-  const apiCreds = credentials.apiCreds ?? await authClient.createOrDeriveApiKey();
+  let apiCreds = credentials.apiCreds;
+  if (!apiCreds) {
+    let createError: unknown;
+    let deriveError: unknown;
+
+    try {
+      apiCreds = await authClient.createApiKey();
+    } catch (error) {
+      createError = error;
+      try {
+        apiCreds = await authClient.deriveApiKey();
+      } catch (fallbackError) {
+        deriveError = fallbackError;
+      }
+    }
+
+    if (!apiCreds) {
+      const signerAddress = signer.address;
+      const signatureTypeLabel = describeSignatureType(credentials.signatureType);
+      const detailLines = [
+        'Could not create or derive a Polymarket API key.',
+        `Signer Address: ${signerAddress}`,
+        `Funder Address: ${credentials.funderAddress}`,
+        `Signature Type: ${signatureTypeLabel}`,
+        `Create API Key Error: ${formatErrorMessage(createError)}`,
+        `Derive API Key Error: ${formatErrorMessage(deriveError)}`,
+        'Check that the funder address matches the address shown in your Polymarket account, the wallet is already usable on Polymarket, and the signature type matches the wallet setup.',
+      ];
+
+      throw new Error(detailLines.join('\n'));
+    }
+  }
 
   const tradingClient = new ClobClient(
     credentials.host,
