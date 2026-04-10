@@ -377,6 +377,22 @@ async function resolvePositionSnapshot(
   return fetched;
 }
 
+async function refreshExecutionSnapshot(
+  snapshot: PaperMarketSnapshot,
+  asset: LiveSessionAsset,
+  marketSource: LiveLoopMarketSource,
+): Promise<PaperMarketSnapshot> {
+  if (!marketSource.getSnapshotBySlug) {
+    return snapshot;
+  }
+
+  try {
+    return await marketSource.getSnapshotBySlug(snapshot.slug, asset);
+  } catch {
+    return snapshot;
+  }
+}
+
 function isSettledSnapshot(snapshot: PaperMarketSnapshot): boolean {
   return snapshot.closed;
 }
@@ -597,7 +613,7 @@ function withBuySlippageLimit(
     return null;
   }
 
-  const priceLimit = roundPriceToTick(anchorPrice * (1 + maxPriceSlippagePct), tickSize, 'down');
+  const priceLimit = roundPriceToTick(anchorPrice * (1 + maxPriceSlippagePct), tickSize, 'up');
   const fills = preview.fills.filter((fill) => fill.price <= priceLimit + 1e-9);
   const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
   if (!isFinitePositiveNumber(shares)) {
@@ -632,7 +648,7 @@ function withSellSlippageLimit(
     return null;
   }
 
-  const priceLimit = roundPriceToTick(anchorPrice * (1 - maxPriceSlippagePct), tickSize, 'up');
+  const priceLimit = roundPriceToTick(anchorPrice * (1 - maxPriceSlippagePct), tickSize, 'down');
   const fills = preview.fills.filter((fill) => fill.price + 1e-9 >= priceLimit);
   const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
   if (!isFinitePositiveNumber(shares)) {
@@ -822,19 +838,25 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
             continue;
           }
 
-          const preview = previewSellExecution(snapshot, position.predictionSide, position.shares ?? position.size, feeModel);
+          const executionSnapshot = await refreshExecutionSnapshot(openMarks[asset] ?? snapshot, asset, input.marketSource);
+          const preview = previewSellExecution(
+            executionSnapshot,
+            position.predictionSide,
+            position.shares ?? position.size,
+            feeModel,
+          );
           if (!preview || preview.fills.length === 0) {
             if (hasOpenPaperPosition(state.positions[asset])) {
-              openMarks[asset] = snapshot;
+              openMarks[asset] = executionSnapshot;
             }
             continue;
           }
 
-          const detail = await input.marketSource.getMarketDetail(position.marketSlug ?? snapshot.slug, asset);
+          const detail = await input.marketSource.getMarketDetail(position.marketSlug ?? executionSnapshot.slug, asset);
           const limitedSell = withSellSlippageLimit(preview, detail.tickSize, maxPriceSlippagePct);
           if (!limitedSell) {
             if (hasOpenPaperPosition(state.positions[asset])) {
-              openMarks[asset] = snapshot;
+              openMarks[asset] = executionSnapshot;
             }
             continue;
           }
@@ -851,16 +873,16 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
           });
 
           if (!fill) {
-            openMarks[asset] = snapshot;
+            openMarks[asset] = executionSnapshot;
             continue;
           }
 
           const closeResult = applyLiveCloseFill(state, asset, position, fill);
           closedEvents.push({
             type: 'live-position-closed',
-            timestamp: snapshot.fetchedAt,
+            timestamp: executionSnapshot.fetchedAt,
             asset,
-            marketSlug: position.marketSlug ?? snapshot.slug,
+            marketSlug: position.marketSlug ?? executionSnapshot.slug,
             side: position.predictionSide,
             shares: fill.soldShares,
             remainingShares: closeResult.remainingShares,
@@ -875,7 +897,7 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
           });
 
           if (hasOpenPaperPosition(state.positions[asset])) {
-            openMarks[asset] = snapshot;
+            openMarks[asset] = executionSnapshot;
           }
           continue;
         }
@@ -902,12 +924,13 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
           continue;
         }
 
-        const preview = previewBuyExecution(snapshot, side, requestedStake, feeModel);
+        const executionSnapshot = await refreshExecutionSnapshot(snapshot, asset, input.marketSource);
+        const preview = previewBuyExecution(executionSnapshot, side, requestedStake, feeModel);
         if (!preview || preview.fills.length === 0) {
           continue;
         }
 
-        const detail = await input.marketSource.getMarketDetail(snapshot.slug, asset);
+        const detail = await input.marketSource.getMarketDetail(executionSnapshot.slug, asset);
         const limitedBuy = withBuySlippageLimit(preview, detail.tickSize, maxPriceSlippagePct);
         if (!limitedBuy) {
           continue;
@@ -947,9 +970,9 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
         });
         openedCount += 1;
         openMarks[asset] = {
-          ...snapshot,
-          upPrice: side === 'up' ? fill.averagePrice : snapshot.upPrice,
-          downPrice: side === 'down' ? fill.averagePrice : snapshot.downPrice,
+          ...executionSnapshot,
+          upPrice: side === 'up' ? fill.averagePrice : executionSnapshot.upPrice,
+          downPrice: side === 'down' ? fill.averagePrice : executionSnapshot.downPrice,
         };
       }
 
