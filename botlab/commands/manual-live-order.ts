@@ -79,6 +79,12 @@ function findLatestOpenedEvent(events: LiveSessionEvent[], asset: PaperMarketAss
     .find((event) => event.type === 'live-position-opened' && event.asset === asset);
 }
 
+function findLatestErrorEvent(events: LiveSessionEvent[]) {
+  return [...events]
+    .reverse()
+    .find((event) => event.type === 'live-cycle-error');
+}
+
 function readEventString(event: LiveSessionEvent, field: string): string {
   const value = event[field];
   return typeof value === 'string' ? value : 'unknown';
@@ -95,6 +101,7 @@ function buildResultSummary(input: {
   side: 'up' | 'down';
   stakeUsd: number;
   event: ReturnType<typeof findLatestOpenedEvent>;
+  errorEvent?: LiveSessionEvent;
   cash: number;
   equity: number;
   paths: ReturnType<typeof resolveLiveSessionPaths>;
@@ -115,6 +122,11 @@ function buildResultSummary(input: {
       `Shares: ${formatBacktestNumber(readEventNumber(input.event, 'shares'))}`,
       `Average Price: ${formatBacktestNumber(readEventNumber(input.event, 'entryPrice'))}`,
       `Fee: ${formatBacktestNumber(readEventNumber(input.event, 'entryFee'))}`,
+    );
+  } else if (input.errorEvent) {
+    lines.push(
+      'Status: failed',
+      `Reason: ${readEventString(input.errorEvent, 'message')}`,
     );
   } else {
     lines.push('Status: no live order opened');
@@ -160,6 +172,7 @@ export async function manualLiveOrderCommand(
     const rawEvents = await fs.readFile(paths.eventsPath, 'utf8').catch(() => '');
     const events = parseEvents(rawEvents);
     const openedEvent = findLatestOpenedEvent(events, options.asset);
+    const errorEvent = findLatestErrorEvent(events);
 
     return buildResultSummary({
       sessionName,
@@ -167,8 +180,9 @@ export async function manualLiveOrderCommand(
       side: options.side,
       stakeUsd: options.stakeUsd,
       event: openedEvent,
+      errorEvent,
       cash: state.cash,
-      equity: state.equity,
+      equity: openedEvent ? state.equity : state.cash,
       paths,
     });
   } finally {

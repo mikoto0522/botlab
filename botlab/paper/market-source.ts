@@ -373,7 +373,7 @@ function normalizeSnapshot(
   const outcomes = parseRawStringList(raw.outcomes);
   const outcomeOrder = readOutcomeOrder(outcomes, sourceDescription);
   const prices = readRequiredPricePair(raw.outcomePrices, outcomeOrder, sourceDescription);
-  const askPair = readOptionalAskPair(raw, outcomeOrder, sourceDescription);
+  const askPair = sanitizeAskPair(readOptionalAskPair(raw, outcomeOrder, sourceDescription), prices);
 
   return {
     asset: bucketRef.asset,
@@ -394,6 +394,30 @@ function normalizeSnapshot(
     volume: coerceNumber(raw.volume),
     fetchedAt: toIsoString(raw.fetchedAt as Date | string | number | undefined),
   };
+}
+
+function sanitizeAskPair(
+  askPair: { upAsk: number | null; downAsk: number | null; downAskDerivedFromBestBid: boolean },
+  prices: { upPrice: number; downPrice: number },
+): { upAsk: number | null; downAsk: number | null; downAskDerivedFromBestBid: boolean } {
+  if (
+    askPair.upAsk !== null
+    && askPair.downAsk !== null
+    && askPair.upAsk >= 0.95
+    && askPair.downAsk >= 0.95
+    && prices.upPrice > 0.05
+    && prices.upPrice < 0.95
+    && prices.downPrice > 0.05
+    && prices.downPrice < 0.95
+  ) {
+    return {
+      upAsk: null,
+      downAsk: null,
+      downAskDerivedFromBestBid: false,
+    };
+  }
+
+  return askPair;
 }
 
 async function requestJson(fetchImpl: typeof fetch, url: string): Promise<RawMarketSnapshot> {

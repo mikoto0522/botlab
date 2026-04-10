@@ -139,3 +139,111 @@ test('manualLiveOrderCommand submits one current-round live buy and reports the 
   assert.match(output, /Shares: 0.94/);
   assert.match(output, /Average Price: 0.53/);
 });
+
+test('manualLiveOrderCommand surfaces the latest live-cycle error when no order opens', async () => {
+  const { manualLiveOrderCommand } = await import('../commands/manual-live-order.js');
+  const { loadBotlabConfig } = await import('../config/default-config.js');
+  const config = loadBotlabConfig(undefined, repoRoot);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-manual-live-error-'));
+
+  const output = await manualLiveOrderCommand(config, {
+    asset: 'BTC',
+    side: 'up',
+    stakeUsd: 0.5,
+    sessionName: 'manual-live-error-test',
+    cwd,
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        {
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1775651700',
+          question: 'Bitcoin Up or Down - manual live error',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:35:00.000Z',
+          endDate: '2026-04-08T12:40:00.000Z',
+          bucketStartTime: '2026-04-08T12:35:00.000Z',
+          bucketStartEpoch: 1775651700,
+          upPrice: 0.475,
+          downPrice: 0.525,
+          upAsk: 0.99,
+          downAsk: 0.99,
+          volume: 130,
+          fetchedAt: '2026-04-08T12:36:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+        {
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1775651700',
+          question: 'Ethereum Up or Down - manual live error',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:35:00.000Z',
+          endDate: '2026-04-08T12:40:00.000Z',
+          bucketStartTime: '2026-04-08T12:35:00.000Z',
+          bucketStartEpoch: 1775651700,
+          upPrice: 0.5,
+          downPrice: 0.5,
+          upAsk: 0.51,
+          downAsk: 0.51,
+          volume: 1500,
+          fetchedAt: '2026-04-08T12:36:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+      ],
+      getSnapshotBySlug: async (slug) => ({
+        asset: 'BTC',
+        slug,
+        question: 'Bitcoin Up or Down - manual live error',
+        active: true,
+        closed: false,
+        acceptingOrders: true,
+        eventStartTime: '2026-04-08T12:35:00.000Z',
+        endDate: '2026-04-08T12:40:00.000Z',
+        bucketStartTime: '2026-04-08T12:35:00.000Z',
+        bucketStartEpoch: 1775651700,
+        upPrice: 0.475,
+        downPrice: 0.525,
+        upAsk: 0.99,
+        downAsk: 0.99,
+        volume: 130,
+        fetchedAt: '2026-04-08T12:36:00.000Z',
+        downAskDerivedFromBestBid: false,
+      }),
+      getMarketDetail: async (slug, asset) => ({
+        asset,
+        slug,
+        question: `${asset} detail`,
+        active: true,
+        closed: false,
+        acceptingOrders: true,
+        eventStartTime: '2026-04-08T12:35:00.000Z',
+        endDate: '2026-04-08T12:40:00.000Z',
+        bucketStartTime: '2026-04-08T12:35:00.000Z',
+        bucketStartEpoch: 1775651700,
+        upLabel: 'Up',
+        downLabel: 'Down',
+        upTokenId: `${asset.toLowerCase()}-up-token`,
+        downTokenId: `${asset.toLowerCase()}-down-token`,
+        volume: 130,
+        tickSize: '0.01',
+        negRisk: false,
+      }),
+      close: async () => {},
+    },
+    tradingClient: {
+      getCollateralBalance: async () => 30.01,
+      buyOutcome: async () => {
+        throw new Error('invalid price (1), min: 0.01 - max: 0.99');
+      },
+      sellOutcome: async () => {
+        throw new Error('unexpected sell call');
+      },
+    },
+  });
+
+  assert.match(output, /Status: failed/);
+  assert.match(output, /Reason: invalid price \(1\), min: 0.01 - max: 0.99/);
+});
