@@ -169,6 +169,9 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!Number.isFinite(stakeValue) || stakeValue <= 0) {
       throw new Error('Missing or invalid --stake value. Use a positive number of USDC.');
     }
+    if (stakeValue < 1) {
+      throw new Error('Invalid --stake value. Manual live orders must be at least 1 USDC.');
+    }
 
     const sessionName = getFlagValue(argv, 'session');
     console.log(await manualLiveOrderCommand(config, {

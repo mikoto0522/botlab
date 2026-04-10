@@ -75,7 +75,7 @@ test('manualLiveOrderCommand submits one current-round live buy and reports the 
   const output = await manualLiveOrderCommand(config, {
     asset: 'BTC',
     side: 'up',
-    stakeUsd: 0.5,
+    stakeUsd: 1,
     sessionName: 'manual-live-test',
     cwd,
     marketSource: {
@@ -115,10 +115,10 @@ test('manualLiveOrderCommand submits one current-round live buy and reports the 
           status: 'matched',
           tokenId: String(input.tokenId),
           requestedAmount: Number(input.amount),
-          spentAmount: 0.5,
-          shares: 0.94,
+          spentAmount: 1,
+          shares: 1.88,
           averagePrice: 0.53,
-          feesPaid: 0.01,
+          feesPaid: 0.02,
         };
       },
       sellOutcome: async () => {
@@ -128,15 +128,15 @@ test('manualLiveOrderCommand submits one current-round live buy and reports the 
   });
 
   assert.equal(buyCalls.length, 1);
-  assert.equal(buyCalls[0]?.amount, 0.5);
+  assert.equal(buyCalls[0]?.amount, 1);
   assert.equal(buyCalls[0]?.priceLimit, 0.55);
   assert.match(output, /Manual Live Order Result/);
   assert.match(output, /Asset: BTC/);
   assert.match(output, /Side: up/);
-  assert.match(output, /Stake: 0.5/);
+  assert.match(output, /Stake: 1/);
   assert.match(output, /Status: matched/);
   assert.match(output, /Order ID: manual-order-1/);
-  assert.match(output, /Shares: 0.94/);
+  assert.match(output, /Shares: 1.88/);
   assert.match(output, /Average Price: 0.53/);
 });
 
@@ -149,7 +149,7 @@ test('manualLiveOrderCommand stops before submission when the current round only
   const output = await manualLiveOrderCommand(config, {
     asset: 'BTC',
     side: 'up',
-    stakeUsd: 0.5,
+    stakeUsd: 1,
     sessionName: 'manual-live-error-test',
     cwd,
     marketSource: {
@@ -246,4 +246,21 @@ test('manualLiveOrderCommand stops before submission when the current round only
 
   assert.match(output, /Status: no live order opened/);
   assert.doesNotMatch(output, /invalid price/);
+});
+
+test('manualLiveOrderCommand rejects stakes below the exchange minimum before placing an order', async () => {
+  const { manualLiveOrderCommand } = await import('../commands/manual-live-order.js');
+  const { loadBotlabConfig } = await import('../config/default-config.js');
+  const config = loadBotlabConfig(undefined, repoRoot);
+
+  await assert.rejects(
+    () => manualLiveOrderCommand(config, {
+      asset: 'BTC',
+      side: 'up',
+      stakeUsd: 0.5,
+      sessionName: 'manual-live-too-small-test',
+      cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-manual-live-too-small-')),
+    }),
+    /at least 1 USDC/i,
+  );
 });

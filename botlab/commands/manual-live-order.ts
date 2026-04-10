@@ -15,6 +15,7 @@ import { createLoopMarketSource, type LoopMarketSourceWithClose } from './live.j
 import type { PaperMarketAsset } from '../paper/market-source.js';
 
 const MANUAL_STRATEGY_ID = 'manual-live-order';
+const MIN_MARKET_ORDER_STAKE_USD = 1;
 
 export interface ManualLiveOrderCommandOptions {
   asset: PaperMarketAsset;
@@ -146,6 +147,10 @@ export async function manualLiveOrderCommand(
   config: BotlabConfig,
   options: ManualLiveOrderCommandOptions,
 ): Promise<string> {
+  if (!Number.isFinite(options.stakeUsd) || options.stakeUsd < MIN_MARKET_ORDER_STAKE_USD) {
+    throw new Error(`Manual live orders must be at least ${MIN_MARKET_ORDER_STAKE_USD} USDC.`);
+  }
+
   const repoRoot = options.cwd ?? path.dirname(config.paths.rootDir);
   const sessionName = options.sessionName ?? createDefaultSessionName(options.asset, options.side);
   const marketSource = options.marketSource ?? createLoopMarketSource();
