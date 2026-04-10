@@ -1460,6 +1460,43 @@ test('polybot port v2 buys an earlier BTC carry that the original port still ski
   assert.equal(v2.size, 6);
 });
 
+test('polybot port v2 now buys a thinner earlier BTC carry instead of waiting for the final squeeze', async () => {
+  const runtime = {
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.29,
+      upPrice: 0.29,
+      downPrice: 0.71,
+      upAsk: 0.3,
+      downAsk: 0.72,
+      volume: 780,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.25, high: 0.26, low: 0.24, close: 0.25, volume: 620 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.25, high: 0.26, low: 0.24, close: 0.25, volume: 660 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.25, high: 0.27, low: 0.24, close: 0.26, volume: 690 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.26, high: 0.28, low: 0.25, close: 0.27, volume: 720 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.27, high: 0.29, low: 0.26, close: 0.28, volume: 750 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.28, high: 0.3, low: 0.27, close: 0.29, volume: 780 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:30:00.000Z' },
+  } satisfies TempConfigRuntime;
+
+  const original = await loadDirectStrategyDecision('polybot-ported', runtime);
+  const v2 = await loadDirectStrategyDecision('polybot-ported-v2', runtime);
+
+  assert.equal(original.action, 'hold');
+  assert.equal(v2.action, 'buy');
+  assert.equal(v2.side, 'up');
+  assert.match(v2.reason, /earlier|early|carrying/i);
+  assert.equal(v2.size, 6);
+});
+
 test('polybot port v2 still holds when a strong setup is already too expensive', async () => {
   const result = await loadPolybotPortedV2Result({
     market: {
