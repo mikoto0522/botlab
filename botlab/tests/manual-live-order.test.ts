@@ -140,7 +140,7 @@ test('manualLiveOrderCommand submits one current-round live buy and reports the 
   assert.match(output, /Average Price: 0.53/);
 });
 
-test('manualLiveOrderCommand surfaces the latest live-cycle error when no order opens', async () => {
+test('manualLiveOrderCommand stops before submission when the current round only shows placeholder 0.99 asks', async () => {
   const { manualLiveOrderCommand } = await import('../commands/manual-live-order.js');
   const { loadBotlabConfig } = await import('../config/default-config.js');
   const config = loadBotlabConfig(undefined, repoRoot);
@@ -236,7 +236,7 @@ test('manualLiveOrderCommand surfaces the latest live-cycle error when no order 
     tradingClient: {
       getCollateralBalance: async () => 30.01,
       buyOutcome: async () => {
-        throw new Error('invalid price (1), min: 0.01 - max: 0.99');
+        throw new Error('buy should not be attempted');
       },
       sellOutcome: async () => {
         throw new Error('unexpected sell call');
@@ -244,6 +244,6 @@ test('manualLiveOrderCommand surfaces the latest live-cycle error when no order 
     },
   });
 
-  assert.match(output, /Status: failed/);
-  assert.match(output, /Reason: invalid price \(1\), min: 0.01 - max: 0.99/);
+  assert.match(output, /Status: no live order opened/);
+  assert.doesNotMatch(output, /invalid price/);
 });

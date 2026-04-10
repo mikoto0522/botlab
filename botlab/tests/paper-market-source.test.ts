@@ -300,6 +300,76 @@ test('fetchPaperMarketSnapshot drops obviously placeholder 0.99 asks when order-
   assert.equal(snapshot.downAskDerivedFromBestBid, false);
 });
 
+test('fetchPaperMarketSnapshot drops placeholder 0.99 asks from order-book enrichment too', async () => {
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down - March 29, 10:50AM-10:55AM UTC',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          endDate: '2026-03-29T10:55:00.000Z',
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          outcomePrices: '["0.475","0.525"]',
+          bestAsk: '["0.99","0.99"]',
+          fetchedAt: '2026-03-29T10:53:27.000Z',
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/books')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            asset_id: 'btc-up-token',
+            bids: [{ price: '0.47', size: '10' }],
+            asks: [{ price: '0.99', size: '50' }],
+          },
+          {
+            asset_id: 'btc-down-token',
+            bids: [{ price: '0.52', size: '11' }],
+            asks: [{ price: '0.99', size: '50' }],
+          },
+        ]),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  }) as typeof fetch;
+
+  const snapshot = await fetchPaperMarketSnapshot(
+    {
+      asset: 'BTC',
+      slug: 'btc-updown-5m-1774781400',
+      bucketStartTime: '2026-03-29T10:50:00.000Z',
+      bucketStartEpoch: 1774781400,
+    },
+    {
+      fetchImpl: fakeFetch,
+      now: '2026-03-29T10:53:27.000Z',
+    },
+  );
+
+  assert.equal(snapshot.upAsk, null);
+  assert.equal(snapshot.downAsk, null);
+  assert.deepEqual(snapshot.upOrderBook?.asks, []);
+  assert.deepEqual(snapshot.downOrderBook?.asks, []);
+  assert.deepEqual(snapshot.upOrderBook?.bids, [{ price: 0.47, size: 10 }]);
+  assert.deepEqual(snapshot.downOrderBook?.bids, [{ price: 0.52, size: 11 }]);
+});
+
 test('fetchPaperMarketSnapshot enriches the snapshot with full order book depth when clob books are available', async () => {
   const fakeFetch: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);

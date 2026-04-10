@@ -419,6 +419,10 @@ function summarizeSnapshot(snapshot: PaperMarketSnapshot): Record<string, unknow
 }
 
 function getEntryLiquidityLevels(snapshot: PaperMarketSnapshot, side: 'up' | 'down'): PaperOrderBookLevel[] {
+  if (hasOnlyPlaceholderOutcomeAsks(snapshot)) {
+    return [];
+  }
+
   const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
   if (orderBook && orderBook.asks.length > 0) {
     return orderBook.asks;
@@ -446,6 +450,36 @@ function getExitLiquidityLevels(snapshot: PaperMarketSnapshot, side: 'up' | 'dow
   return Number.isFinite(fallbackPrice) && fallbackPrice >= 0 && fallbackPrice <= 1
     ? [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }]
     : [];
+}
+
+function readBestOutcomeAsk(snapshot: PaperMarketSnapshot, side: 'up' | 'down'): number | null {
+  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
+  const orderBookAsk = orderBook?.asks[0]?.price;
+  if (isFinitePositiveNumber(orderBookAsk)) {
+    return orderBookAsk;
+  }
+
+  const fallbackAsk = side === 'up' ? snapshot.upAsk : snapshot.downAsk;
+  return isFinitePositiveNumber(fallbackAsk) ? fallbackAsk : null;
+}
+
+function hasOnlyPlaceholderOutcomeAsks(snapshot: PaperMarketSnapshot): boolean {
+  const upBestAsk = readBestOutcomeAsk(snapshot, 'up');
+  const downBestAsk = readBestOutcomeAsk(snapshot, 'down');
+  if (upBestAsk === null || downBestAsk === null) {
+    return false;
+  }
+
+  return (
+    upBestAsk >= 0.95
+    && downBestAsk >= 0.95
+    && snapshot.upPrice !== null
+    && snapshot.upPrice > 0.05
+    && snapshot.upPrice < 0.95
+    && snapshot.downPrice !== null
+    && snapshot.downPrice > 0.05
+    && snapshot.downPrice < 0.95
+  );
 }
 
 function previewBuyExecution(
@@ -563,14 +597,6 @@ function previewSellExecution(
   };
 }
 
-function clampBinaryPrice(price: number): number {
-  if (!Number.isFinite(price)) {
-    return 0;
-  }
-
-  return Math.min(1, Math.max(0, price));
-}
-
 function parseTickSize(tickSize: PaperMarketDetail['tickSize']): number | null {
   const parsed = Number.parseFloat(String(tickSize));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -591,7 +617,14 @@ function roundPriceToTick(
   direction: 'up' | 'down',
 ): number {
   const tick = parseTickSize(tickSize);
-  const clamped = clampBinaryPrice(rawPrice);
+  const decimalPlaces = countTickDecimals(tickSize);
+  const minPrice = tick ?? 0.01;
+  const maxPrice = tick
+    ? Number((1 - tick).toFixed(decimalPlaces))
+    : 0.99;
+  const clamped = Number.isFinite(rawPrice)
+    ? Math.min(maxPrice, Math.max(minPrice, rawPrice))
+    : minPrice;
   if (!tick) {
     return clamped;
   }
@@ -600,7 +633,7 @@ function roundPriceToTick(
     ? Math.floor((clamped + 1e-9) / tick) * tick
     : Math.ceil((clamped - 1e-9) / tick) * tick;
 
-  return clampBinaryPrice(Number(scaled.toFixed(countTickDecimals(tickSize))));
+  return Math.min(maxPrice, Math.max(minPrice, Number(scaled.toFixed(decimalPlaces))));
 }
 
 function withBuySlippageLimit(
