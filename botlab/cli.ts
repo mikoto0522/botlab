@@ -10,6 +10,7 @@ import { createStrategyCommand } from './commands/create-strategy.js';
 import { describeStrategyCommand } from './commands/describe-strategy.js';
 import { listStrategiesCommand } from './commands/list-strategies.js';
 import { liveCommand } from './commands/live.js';
+import { manualLiveOrderCommand } from './commands/manual-live-order.js';
 import { paperCommand } from './commands/paper.js';
 import { runStrategyCommand } from './commands/run-strategy.js';
 
@@ -47,7 +48,7 @@ function getBacktestSide(args: string[]): BacktestSide {
 
 function requireCommand(command: string | undefined): string {
   if (!command) {
-    throw new Error('Missing command. Use list-strategies, describe-strategy, create-strategy, run, paper, live, backtest, backtest-batch, backtest-hedge, or analyze-hedge.');
+    throw new Error('Missing command. Use list-strategies, describe-strategy, create-strategy, run, paper, live, manual-live-order, backtest, backtest-batch, backtest-hedge, or analyze-hedge.');
   }
 
   return command;
@@ -149,6 +150,32 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       intervalSeconds: intervalValue,
       maxCycles: parsedMaxCycles,
       stakeUsd: stakeValue,
+    }));
+    return;
+  }
+
+  if (command === 'manual-live-order') {
+    const asset = getFlagValue(argv, 'asset');
+    if (asset !== 'BTC' && asset !== 'ETH') {
+      throw new Error('Missing or invalid --asset value. Use --asset=BTC or --asset=ETH.');
+    }
+
+    const side = getFlagValue(argv, 'side');
+    if (side !== 'up' && side !== 'down') {
+      throw new Error('Missing or invalid --side value. Use --side=up or --side=down.');
+    }
+
+    const stakeValue = Number(getFlagValue(argv, 'stake'));
+    if (!Number.isFinite(stakeValue) || stakeValue <= 0) {
+      throw new Error('Missing or invalid --stake value. Use a positive number of USDC.');
+    }
+
+    const sessionName = getFlagValue(argv, 'session');
+    console.log(await manualLiveOrderCommand(config, {
+      asset,
+      side,
+      stakeUsd: stakeValue,
+      sessionName,
     }));
     return;
   }

@@ -74,11 +74,11 @@ function buildRefFromSlug(asset: PaperMarketAsset, slug: string): PaperMarketRef
   };
 }
 
-type LoopMarketSourceWithClose = HybridPaperMarketSource & {
+export type LoopMarketSourceWithClose = HybridPaperMarketSource & {
   getMarketDetail: (slug: string, asset: PaperMarketAsset) => ReturnType<typeof fetchPaperMarketDetail>;
 };
 
-function createLoopMarketSource(): LoopMarketSourceWithClose {
+export function createLoopMarketSource(): LoopMarketSourceWithClose {
   const pollingSource = {
     getCurrentSnapshots: createLivePaperMarketSource(),
     getSnapshotBySlug: async (slug: string, asset: PaperMarketAsset): Promise<PaperMarketSnapshot> => {
