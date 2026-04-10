@@ -432,6 +432,10 @@ async function loadPolybotPortedV2Result(runtime: TempConfigRuntime) {
   return loadStrategyResult('polybot-ported-v2', runtime);
 }
 
+async function loadPolybotPortedV3Result(runtime: TempConfigRuntime) {
+  return loadStrategyResult('polybot-ported-v3', runtime);
+}
+
 async function loadExtremeReversalResult(runtime: TempConfigRuntime) {
   return loadStrategyResult('extreme-reversal-5m', runtime);
 }
@@ -1584,6 +1588,110 @@ test('polybot port v2 keeps early entries smaller than stronger confirmed entrie
   assert.equal(early.action, 'buy');
   assert.equal(confirmed.action, 'buy');
   assert.ok((confirmed.size ?? 0) > (early.size ?? 0));
+});
+
+test('polybot port v3 opens a starter entry inside the preferred 90-to-120 second window', async () => {
+  const runtime = {
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.265,
+      upPrice: 0.265,
+      downPrice: 0.735,
+      upAsk: 0.275,
+      downAsk: 0.745,
+      volume: 900,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.24, high: 0.245, low: 0.239, close: 0.24, volume: 710 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.24, high: 0.25, low: 0.239, close: 0.245, volume: 760 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.245, high: 0.255, low: 0.244, close: 0.25, volume: 800 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.25, high: 0.258, low: 0.249, close: 0.255, volume: 840 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.255, high: 0.263, low: 0.254, close: 0.26, volume: 870 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.26, high: 0.268, low: 0.259, close: 0.265, volume: 900 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:33:20.000Z' },
+  } satisfies TempConfigRuntime;
+
+  const v2 = await loadDirectStrategyDecision('polybot-ported-v2', runtime);
+  const v3 = await loadDirectStrategyDecision('polybot-ported-v3', runtime);
+
+  assert.equal(v2.action, 'hold');
+  assert.equal(v3.action, 'buy');
+  assert.equal(v3.side, 'up');
+  assert.equal(v3.size, 6);
+  assert.match(v3.reason, /window|early|starter/i);
+});
+
+test('polybot port v3 skips a marginal starter setup in the final seconds instead of chasing it', async () => {
+  const runtime = {
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.31,
+      upPrice: 0.31,
+      downPrice: 0.69,
+      upAsk: 0.32,
+      downAsk: 0.7,
+      volume: 1250,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.25, high: 0.26, low: 0.24, close: 0.25, volume: 980 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.25, high: 0.26, low: 0.24, close: 0.25, volume: 1010 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.25, high: 0.28, low: 0.24, close: 0.27, volume: 1080 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.27, high: 0.29, low: 0.26, close: 0.28, volume: 1130 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.28, high: 0.3, low: 0.27, close: 0.29, volume: 1190 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.29, high: 0.32, low: 0.28, close: 0.31, volume: 1250 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:34:35.000Z' },
+  } satisfies TempConfigRuntime;
+
+  const v2 = await loadDirectStrategyDecision('polybot-ported-v2', runtime);
+  const v3 = await loadDirectStrategyDecision('polybot-ported-v3', runtime);
+
+  assert.equal(v2.action, 'buy');
+  assert.equal(v3.action, 'hold');
+  assert.match(v3.reason, /late|window|chasing/i);
+});
+
+test('polybot port v3 still allows a very strong confirmed move even when the window is nearly over', async () => {
+  const result = await loadPolybotPortedV3Result({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.46,
+      upPrice: 0.46,
+      downPrice: 0.54,
+      upAsk: 0.47,
+      downAsk: 0.55,
+      volume: 2350,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.2, high: 0.24, low: 0.19, close: 0.23, volume: 1700 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.23, high: 0.29, low: 0.22, close: 0.28, volume: 1820 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.28, high: 0.35, low: 0.27, close: 0.33, volume: 1950 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.33, high: 0.4, low: 0.32, close: 0.38, volume: 2080 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.38, high: 0.45, low: 0.37, close: 0.42, volume: 2210 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.42, high: 0.47, low: 0.41, close: 0.46, volume: 2350 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:34:35.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'up');
+  assert.ok((result.decision.size ?? 0) >= 12);
 });
 
 test('extreme reversal buys up after an extreme low quote turns and ETH confirms', async () => {
