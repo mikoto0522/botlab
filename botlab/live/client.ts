@@ -70,6 +70,16 @@ export interface PolymarketLiveCredentials {
   apiCreds?: ApiKeyCreds;
 }
 
+interface OrderResponseLike {
+  success?: unknown;
+  errorMsg?: unknown;
+  orderID?: unknown;
+  status?: unknown;
+  transactionsHashes?: unknown;
+  takingAmount?: unknown;
+  makingAmount?: unknown;
+}
+
 function describeSignatureType(signatureType: SignatureType): string {
   if (signatureType === SignatureType.POLY_PROXY) {
     return 'POLY_PROXY';
@@ -91,6 +101,58 @@ function formatErrorMessage(error: unknown): string {
 
 function sanitizePrivateKey(privateKey: string): string {
   return privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+}
+
+function parseNonNegativeAmount(value: unknown): number | null {
+  const parsed = typeof value === 'string' || typeof value === 'number'
+    ? Number.parseFloat(String(value))
+    : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function resolveBuyOrderFill(
+  input: LiveBuyOrderRequest,
+  response: OrderResponseLike,
+): LiveBuyOrderResult {
+  const spentAmount = parseNonNegativeAmount(response.makingAmount) ?? input.expectedTotalCost;
+  const shares = parseNonNegativeAmount(response.takingAmount) ?? input.expectedShares;
+  const averagePrice = shares > 0
+    ? spentAmount / shares
+    : input.expectedAveragePrice;
+
+  return {
+    orderId: typeof response.orderID === 'string' ? response.orderID : '',
+    status: typeof response.status === 'string' ? response.status : 'unknown',
+    tokenId: input.tokenId,
+    requestedAmount: input.amount,
+    spentAmount,
+    shares,
+    averagePrice,
+    feesPaid: input.expectedFeesPaid,
+  };
+}
+
+export function resolveSellOrderFill(
+  input: LiveSellOrderRequest,
+  response: OrderResponseLike,
+): LiveSellOrderResult {
+  const soldShares = parseNonNegativeAmount(response.makingAmount) ?? input.shares;
+  const grossProceeds = parseNonNegativeAmount(response.takingAmount) ?? input.expectedGrossProceeds;
+  const averagePrice = soldShares > 0
+    ? grossProceeds / soldShares
+    : input.expectedAveragePrice;
+
+  return {
+    orderId: typeof response.orderID === 'string' ? response.orderID : '',
+    status: typeof response.status === 'string' ? response.status : 'unknown',
+    tokenId: input.tokenId,
+    requestedShares: input.shares,
+    soldShares,
+    averagePrice,
+    grossProceeds,
+    feesPaid: input.expectedFeesPaid,
+    netProceeds: grossProceeds - input.expectedFeesPaid,
+  };
 }
 
 export function normalizeCollateralBalance(rawBalance: string): number {
@@ -244,16 +306,7 @@ export async function createPolymarketLiveTradingClient(
         return null;
       }
 
-      return {
-        orderId: typeof response.orderID === 'string' ? response.orderID : '',
-        status: typeof response.status === 'string' ? response.status : 'unknown',
-        tokenId: input.tokenId,
-        requestedAmount: input.amount,
-        spentAmount: input.expectedTotalCost,
-        shares: input.expectedShares,
-        averagePrice: input.expectedAveragePrice,
-        feesPaid: input.expectedFeesPaid,
-      };
+      return resolveBuyOrderFill(input, response);
     },
     async sellOutcome(input) {
       const response = await tradingClient.createAndPostMarketOrder(
@@ -275,17 +328,7 @@ export async function createPolymarketLiveTradingClient(
         return null;
       }
 
-      return {
-        orderId: typeof response.orderID === 'string' ? response.orderID : '',
-        status: typeof response.status === 'string' ? response.status : 'unknown',
-        tokenId: input.tokenId,
-        requestedShares: input.shares,
-        soldShares: input.shares,
-        averagePrice: input.expectedAveragePrice,
-        grossProceeds: input.expectedGrossProceeds,
-        feesPaid: input.expectedFeesPaid,
-        netProceeds: input.expectedGrossProceeds - input.expectedFeesPaid,
-      };
+      return resolveSellOrderFill(input, response);
     },
   };
 }

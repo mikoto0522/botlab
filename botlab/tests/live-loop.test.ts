@@ -321,6 +321,7 @@ test('runLiveLoop opens a live position and records the real fill', async () => 
   const state = loadLiveSessionState('Live Open Session', cwd, { startingCash: 10 });
   const { eventsPath } = resolveLiveSessionPaths(cwd, 'Live Open Session');
   const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  const openEvent = events.find((event) => event.type === 'live-position-opened');
 
   assert.equal(result.cyclesCompleted, 1);
   assert.equal(buyCalls.length, 1);
@@ -330,6 +331,11 @@ test('runLiveLoop opens a live position and records the real fill', async () => 
   assert.equal(state.positions.BTC?.predictionSide, 'up');
   assert.equal(state.positions.BTC?.shares, 1.88);
   assert.equal(state.positions.BTC?.marketSlug, 'btc-updown-5m-1775649600');
+  assert.equal(openEvent?.quotedPrice, 0.53);
+  assert.equal(openEvent?.priceLimit, 0.55);
+  assert.equal(openEvent?.bookVisible, true);
+  assert.equal(openEvent?.previewAveragePrice, 0.53);
+  assert.equal(openEvent?.previewShares, 1.85);
   assert.equal(events.some((event) => event.type === 'live-position-opened'), true);
   assert.equal(events.some((event) => event.type === 'live-cycle-complete'), true);
 });
@@ -1074,6 +1080,152 @@ test('runLiveLoop skips a buy when both outcome books only show placeholder 0.99
   assert.equal(buyCalls.length, 0);
   assert.equal(state.positions.BTC, undefined);
   assert.equal(state.cash, 30.01);
+});
+
+test('runLiveLoop skips a buy when the refreshed snapshot has no visible ask depth for the chosen side', async () => {
+  const { runLiveLoop } = await import('../live/loop.js');
+  const { loadLiveSessionState } = await import('../live/session-store.js');
+  const strategyDir = writeLiveBuyStrategy();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-live-no-depth-buy-'));
+  const buyCalls: Array<Record<string, unknown>> = [];
+
+  await runLiveLoop({
+    sessionName: 'Live No Depth Buy Session',
+    strategyId: 'live-buy-test',
+    strategyDir,
+    cwd,
+    startingCash: 30,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 1,
+    stakeOverrideUsd: 1,
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        {
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1775652000',
+          question: 'Bitcoin Up or Down - no visible ask depth',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:40:00.000Z',
+          endDate: '2026-04-08T12:45:00.000Z',
+          bucketStartTime: '2026-04-08T12:40:00.000Z',
+          bucketStartEpoch: 1775652000,
+          upPrice: 0.47,
+          downPrice: 0.53,
+          upAsk: 0.49,
+          downAsk: 0.55,
+          upOrderBook: {
+            bids: [{ price: 0.47, size: 50 }],
+            asks: [{ price: 0.49, size: 50 }],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.53, size: 50 }],
+            asks: [{ price: 0.55, size: 50 }],
+          },
+          volume: 800,
+          fetchedAt: '2026-04-08T12:41:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+        {
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1775652000',
+          question: 'Ethereum Up or Down - no visible ask depth',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:40:00.000Z',
+          endDate: '2026-04-08T12:45:00.000Z',
+          bucketStartTime: '2026-04-08T12:40:00.000Z',
+          bucketStartEpoch: 1775652000,
+          upPrice: 0.5,
+          downPrice: 0.5,
+          upAsk: 0.51,
+          downAsk: 0.51,
+          upOrderBook: {
+            bids: [{ price: 0.5, size: 50 }],
+            asks: [{ price: 0.51, size: 50 }],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.5, size: 50 }],
+            asks: [{ price: 0.51, size: 50 }],
+          },
+          volume: 800,
+          fetchedAt: '2026-04-08T12:41:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+      ],
+      getSnapshotBySlug: async (slug, asset) => {
+        if (asset !== 'BTC') {
+          throw new Error(`unexpected refresh for ${asset} ${slug}`);
+        }
+
+        return {
+          asset: 'BTC',
+          slug,
+          question: 'Bitcoin Up or Down - refreshed without ask depth',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:40:00.000Z',
+          endDate: '2026-04-08T12:45:00.000Z',
+          bucketStartTime: '2026-04-08T12:40:00.000Z',
+          bucketStartEpoch: 1775652000,
+          upPrice: 0.48,
+          downPrice: 0.52,
+          upAsk: 0.5,
+          downAsk: 0.54,
+          upOrderBook: {
+            bids: [{ price: 0.48, size: 50 }],
+            asks: [],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.52, size: 50 }],
+            asks: [{ price: 0.54, size: 50 }],
+          },
+          volume: 800,
+          fetchedAt: '2026-04-08T12:41:02.000Z',
+          downAskDerivedFromBestBid: false,
+        };
+      },
+      getMarketDetail: async (slug, asset) => ({
+        asset,
+        slug,
+        question: `${asset} detail`,
+        active: true,
+        closed: false,
+        acceptingOrders: true,
+        eventStartTime: '2026-04-08T12:40:00.000Z',
+        endDate: '2026-04-08T12:45:00.000Z',
+        bucketStartTime: '2026-04-08T12:40:00.000Z',
+        bucketStartEpoch: 1775652000,
+        upLabel: 'Up',
+        downLabel: 'Down',
+        upTokenId: `${asset.toLowerCase()}-up-token`,
+        downTokenId: `${asset.toLowerCase()}-down-token`,
+        volume: 800,
+        tickSize: '0.01',
+        negRisk: false,
+      }),
+    },
+    tradingClient: {
+      getCollateralBalance: async () => 30,
+      buyOutcome: async (input) => {
+        buyCalls.push(input as unknown as Record<string, unknown>);
+        return null;
+      },
+      sellOutcome: async () => {
+        throw new Error('unexpected sell call');
+      },
+    },
+  });
+
+  const state = loadLiveSessionState('Live No Depth Buy Session', cwd, { startingCash: 30 });
+
+  assert.equal(buyCalls.length, 0);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(state.cash, 30);
 });
 
 test('runLiveLoop rounds a sell slippage floor down to the next tick when the percentage lands between ticks', async () => {

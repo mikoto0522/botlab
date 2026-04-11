@@ -385,6 +385,8 @@ function appendOpenEvents(
       totalCost: item.totalCost,
       partialFill: item.partialFill,
       levelsConsumed: item.levelsConsumed,
+      bookVisible: item.bookVisible,
+      quotedPrice: item.quotedPrice,
       fills: item.fills,
     }, cwd);
   }

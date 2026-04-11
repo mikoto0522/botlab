@@ -103,6 +103,11 @@ function writeParametrizedPaperStrategy(): string {
 }
 
 function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSnapshot, 'asset' | 'slug' | 'bucketStartTime' | 'bucketStartEpoch'>): PaperMarketSnapshot {
+  const upPrice = input.upPrice ?? 0.5;
+  const downPrice = input.downPrice ?? 0.5;
+  const upAsk = input.upAsk ?? upPrice;
+  const downAsk = input.downAsk ?? downPrice;
+
   return {
     ...(input as Record<string, unknown>),
     asset: input.asset,
@@ -115,10 +120,18 @@ function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSn
     endDate: input.endDate ?? new Date((input.bucketStartEpoch + 300) * 1000).toISOString(),
     bucketStartTime: input.bucketStartTime,
     bucketStartEpoch: input.bucketStartEpoch,
-    upPrice: input.upPrice ?? 0.5,
-    downPrice: input.downPrice ?? 0.5,
-    upAsk: input.upAsk ?? input.upPrice ?? 0.5,
-    downAsk: input.downAsk ?? input.downPrice ?? 0.5,
+    upPrice,
+    downPrice,
+    upAsk,
+    downAsk,
+    upOrderBook: input.upOrderBook ?? {
+      bids: [{ price: upPrice, size: 10_000 }],
+      asks: [{ price: upAsk, size: 10_000 }],
+    },
+    downOrderBook: input.downOrderBook ?? {
+      bids: [{ price: downPrice, size: 10_000 }],
+      asks: [{ price: downAsk, size: 10_000 }],
+    },
     downAskDerivedFromBestBid: input.downAskDerivedFromBestBid ?? false,
     volume: input.volume ?? 25_000,
     fetchedAt: input.fetchedAt ?? input.bucketStartTime,
@@ -614,7 +627,7 @@ test('runPaperLoop partially fills an entry when the order book cannot satisfy t
             bids: [{ price: 0.57, size: 30 }],
             asks: [{ price: 0.59, size: 30 }],
           },
-        } as PaperMarketSnapshot),
+        }),
         createSnapshot({
           asset: 'ETH',
           slug: 'eth-updown-5m-1711443600',
@@ -648,6 +661,71 @@ test('runPaperLoop partially fills an entry when the order book cannot satisfy t
   assert.equal(openEvent?.levelsConsumed, 2);
 });
 
+test('runPaperLoop skips an entry when only a fallback ask is available without visible ask depth', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-no-depth-open-'));
+  const strategyDir = writeParametrizedPaperStrategy();
+
+  await runPaperLoop({
+    sessionName: 'No Depth Open Session',
+    strategyId: 'paper-param-test',
+    strategyDir,
+    cwd,
+    startingCash: 100,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 1,
+    strategyParamOverrides: {
+      stake: 5,
+    },
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        createSnapshot({
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1711444200',
+          bucketStartTime: '2026-03-26T09:10:00.000Z',
+          bucketStartEpoch: 1711444200,
+          upPrice: 0.41,
+          downPrice: 0.59,
+          upAsk: 0.43,
+          downAsk: 0.61,
+          fetchedAt: '2026-03-26T09:10:10.000Z',
+          upOrderBook: {
+            bids: [{ price: 0.41, size: 30 }],
+            asks: [],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.59, size: 30 }],
+            asks: [{ price: 0.61, size: 30 }],
+          },
+        }),
+        createSnapshot({
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1711444200',
+          bucketStartTime: '2026-03-26T09:10:00.000Z',
+          bucketStartEpoch: 1711444200,
+          upPrice: 0.55,
+          downPrice: 0.45,
+          upAsk: 0.57,
+          downAsk: 0.47,
+          fetchedAt: '2026-03-26T09:10:10.000Z',
+        }),
+      ],
+      getSnapshotBySlug: async (slug) => {
+        assert.fail(`unexpected slug lookup for ${slug}`);
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('No Depth Open Session', cwd, { startingCash: 100 });
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'No Depth Open Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  assert.equal(state.tradeCount, 0);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(events.some((event) => event.type === 'paper-position-opened'), false);
+});
+
 test('runPaperLoop partially closes a position when the order book cannot absorb all held shares', async () => {
   const { runPaperLoop } = await import('../paper/loop.js');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-partial-close-'));
@@ -677,7 +755,7 @@ test('runPaperLoop partially closes a position when the order book cannot absorb
           bids: [{ price: 0.57, size: 30 }],
           asks: [{ price: 0.59, size: 30 }],
         },
-      } as PaperMarketSnapshot),
+      }),
       createSnapshot({
         asset: 'ETH',
         slug: 'eth-updown-5m-1711443600',
@@ -709,7 +787,7 @@ test('runPaperLoop partially closes a position when the order book cannot absorb
           bids: [{ price: 0.39, size: 30 }],
           asks: [{ price: 0.41, size: 30 }],
         },
-      } as PaperMarketSnapshot),
+      }),
       createSnapshot({
         asset: 'ETH',
         slug: 'eth-updown-5m-1711443900',

@@ -27,6 +27,8 @@ export interface OpenPaperPositionResult {
   totalCost: number;
   partialFill: boolean;
   levelsConsumed: number;
+  bookVisible: boolean;
+  quotedPrice: number | null;
   fills: PaperExecutionFillLevel[];
   openedAt: string;
   position: PaperSessionPosition;
@@ -75,6 +77,8 @@ interface PaperBuyExecution {
   totalFee: number;
   partialFill: boolean;
   levelsConsumed: number;
+  bookVisible: boolean;
+  quotedPrice: number | null;
   fills: PaperExecutionFillLevel[];
 }
 
@@ -93,6 +97,7 @@ interface PaperSellExecution {
 interface PaperLiquidityLevels {
   levels: PaperOrderBookLevel[];
   depthVisible: boolean;
+  quotedPrice: number | null;
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -141,25 +146,28 @@ function getEntryLiquidityLevels(
   snapshot: PaperMarketSnapshot,
   side: PaperSessionPredictionSide,
 ): PaperLiquidityLevels {
+  if (hasOnlyPlaceholderOutcomeAsks(snapshot)) {
+    return {
+      levels: [],
+      depthVisible: false,
+      quotedPrice: readBestOutcomeAsk(snapshot, side),
+    };
+  }
+
   const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
   if (orderBook && orderBook.asks.length > 0) {
     return {
       levels: orderBook.asks,
       depthVisible: true,
+      quotedPrice: readBestOutcomeAsk(snapshot, side),
     };
   }
 
   const fallbackPrice = getEntryPrice(snapshot, side);
-  if (!isFinitePositiveNumber(fallbackPrice)) {
-    return {
-      levels: [],
-      depthVisible: false,
-    };
-  }
-
   return {
-    levels: [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }],
+    levels: [],
     depthVisible: false,
+    quotedPrice: isFinitePositiveNumber(fallbackPrice) ? fallbackPrice : null,
   };
 }
 
@@ -172,6 +180,7 @@ function getExitLiquidityLevels(
     return {
       levels: orderBook.bids,
       depthVisible: true,
+      quotedPrice: orderBook.bids[0]?.price ?? null,
     };
   }
 
@@ -180,13 +189,45 @@ function getExitLiquidityLevels(
     return {
       levels: [],
       depthVisible: false,
+      quotedPrice: null,
     };
   }
 
   return {
     levels: [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }],
     depthVisible: false,
+    quotedPrice: fallbackPrice,
   };
+}
+
+function readBestOutcomeAsk(snapshot: PaperMarketSnapshot, side: PaperSessionPredictionSide): number | null {
+  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
+  const orderBookAsk = orderBook?.asks[0]?.price;
+  if (isFinitePositiveNumber(orderBookAsk)) {
+    return orderBookAsk;
+  }
+
+  const fallbackAsk = side === 'up' ? snapshot.upAsk : snapshot.downAsk;
+  return isFinitePositiveNumber(fallbackAsk) ? fallbackAsk : null;
+}
+
+function hasOnlyPlaceholderOutcomeAsks(snapshot: PaperMarketSnapshot): boolean {
+  const upBestAsk = readBestOutcomeAsk(snapshot, 'up');
+  const downBestAsk = readBestOutcomeAsk(snapshot, 'down');
+  if (upBestAsk === null || downBestAsk === null) {
+    return false;
+  }
+
+  return (
+    upBestAsk >= 0.95
+    && downBestAsk >= 0.95
+    && snapshot.upPrice !== null
+    && snapshot.upPrice > 0.05
+    && snapshot.upPrice < 0.95
+    && snapshot.downPrice !== null
+    && snapshot.downPrice > 0.05
+    && snapshot.downPrice < 0.95
+  );
 }
 
 function executeBuyAgainstOrderBook(
@@ -195,7 +236,7 @@ function executeBuyAgainstOrderBook(
   requestedStake: number,
   feeModel: BacktestFeeModel,
 ): PaperBuyExecution | null {
-  const { levels, depthVisible } = getEntryLiquidityLevels(snapshot, side);
+  const { levels, depthVisible, quotedPrice } = getEntryLiquidityLevels(snapshot, side);
   let remainingBudget = requestedStake;
   let totalShares = 0;
   let grossCost = 0;
@@ -250,6 +291,8 @@ function executeBuyAgainstOrderBook(
     totalFee,
     partialFill: depthVisible && requestedStake - (grossCost + totalFee) > 1e-9,
     levelsConsumed: fills.length,
+    bookVisible: depthVisible,
+    quotedPrice,
     fills,
   };
 }
@@ -445,6 +488,8 @@ export function openPaperPosition(
     totalCost: execution.totalCost,
     partialFill: execution.partialFill,
     levelsConsumed: execution.levelsConsumed,
+    bookVisible: execution.bookVisible,
+    quotedPrice: execution.quotedPrice,
     fills: execution.fills,
     openedAt,
     position,

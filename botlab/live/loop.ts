@@ -118,6 +118,8 @@ interface LiveBuyPreview {
   totalFee: number;
   partialFill: boolean;
   levelsConsumed: number;
+  bookVisible: boolean;
+  quotedPrice: number | null;
   fills: LiveExecutionFillLevel[];
 }
 
@@ -427,14 +429,7 @@ function getEntryLiquidityLevels(snapshot: PaperMarketSnapshot, side: 'up' | 'do
   if (orderBook && orderBook.asks.length > 0) {
     return orderBook.asks;
   }
-
-  const fallbackPrice = side === 'up'
-    ? snapshot.upAsk ?? snapshot.upPrice ?? 0
-    : snapshot.downAsk ?? snapshot.downPrice ?? 0;
-
-  return isFinitePositiveNumber(fallbackPrice)
-    ? [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }]
-    : [];
+  return [];
 }
 
 function getExitLiquidityLevels(snapshot: PaperMarketSnapshot, side: 'up' | 'down'): PaperOrderBookLevel[] {
@@ -489,6 +484,7 @@ function previewBuyExecution(
   feeModel: BacktestFeeModel,
 ): LiveBuyPreview | null {
   const levels = getEntryLiquidityLevels(snapshot, side);
+  const quotedPrice = readBestOutcomeAsk(snapshot, side);
   let remainingBudget = requestedStake;
   let totalShares = 0;
   let grossCost = 0;
@@ -538,6 +534,8 @@ function previewBuyExecution(
     totalFee,
     partialFill: requestedStake - (grossCost + totalFee) > 1e-9,
     levelsConsumed: fills.length,
+    bookVisible: true,
+    quotedPrice,
     fills,
   };
 }
@@ -666,6 +664,8 @@ function withBuySlippageLimit(
       totalFee,
       partialFill: preview.requestedStake - (grossCost + totalFee) > 1e-9,
       levelsConsumed: fills.length,
+      bookVisible: preview.bookVisible,
+      quotedPrice: preview.quotedPrice,
       fills,
     },
   };
@@ -1000,6 +1000,17 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
           totalCost: fill.spentAmount,
           orderId: fill.orderId,
           status: fill.status,
+          quotedPrice: limitedBuy.preview.quotedPrice,
+          bookVisible: limitedBuy.preview.bookVisible,
+          previewShares: limitedBuy.preview.shares,
+          previewAveragePrice: limitedBuy.preview.avgPrice,
+          previewTotalCost: limitedBuy.preview.totalCost,
+          previewFee: limitedBuy.preview.totalFee,
+          previewPartialFill: limitedBuy.preview.partialFill,
+          previewLevelsConsumed: limitedBuy.preview.levelsConsumed,
+          previewFills: limitedBuy.preview.fills,
+          priceLimit: limitedBuy.priceLimit,
+          executionSnapshotFetchedAt: executionSnapshot.fetchedAt,
         });
         openedCount += 1;
         openMarks[asset] = {
