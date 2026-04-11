@@ -102,6 +102,36 @@ function writeParametrizedPaperStrategy(): string {
   return strategyDir;
 }
 
+function writeAssetPaperStrategy(asset: 'BTC' | 'ETH'): string {
+  const strategyDir = fs.mkdtempSync(path.join(os.tmpdir(), `botlab-paper-${asset.toLowerCase()}-strategy-`));
+  const strategyPath = path.join(strategyDir, `paper-${asset.toLowerCase()}-test.strategy.ts`);
+  const strategyId = `paper-${asset.toLowerCase()}-test`;
+
+  fs.writeFileSync(
+    strategyPath,
+    [
+      'export const strategy = {',
+      `  id: '${strategyId}',`,
+      `  name: 'Paper ${asset} Test',`,
+      `  description: 'Buys ${asset} once so realtime single-asset paper flow can be asserted.',`,
+      '  defaults: {},',
+      '  evaluate(context) {',
+      `    if (context.market.asset !== '${asset}') {`,
+      "      return { action: 'hold', reason: 'different asset' };",
+      '    }',
+      "    if (context.position.side !== 'flat') {",
+      "      return { action: 'hold', reason: 'already in position' };",
+      '    }',
+      "    return { action: 'buy', side: 'up', size: 10, reason: 'single-asset realtime paper entry' };",
+      '  },',
+      '};',
+      '',
+    ].join('\n'),
+  );
+
+  return strategyDir;
+}
+
 function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSnapshot, 'asset' | 'slug' | 'bucketStartTime' | 'bucketStartEpoch'>): PaperMarketSnapshot {
   const upPrice = input.upPrice ?? 0.5;
   const downPrice = input.downPrice ?? 0.5;
@@ -832,4 +862,50 @@ test('runPaperLoop partially closes a position when the order book cannot absorb
   assert.equal(closeEvent?.partialFill, true);
   assert.equal(closeEvent?.remainingShares, 5);
   assert.equal(closeEvent?.levelsConsumed, 1);
+});
+
+test('runPaperLoop reacts to a single-asset realtime signal without waiting for the paired asset', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-single-asset-signal-'));
+  const strategyDir = writeAssetPaperStrategy('ETH');
+  let waitForNextSignalCalls = 0;
+
+  await runPaperLoop({
+    sessionName: 'Paper Single Asset Signal Session',
+    strategyId: 'paper-eth-test',
+    strategyDir,
+    cwd,
+    intervalMs: 30_000,
+    maxCycles: 1,
+    sleepMs: async () => {
+      assert.fail('paper loop should not sleep when a realtime signal source is available');
+    },
+    marketSource: {
+      getCurrentSnapshots: async () => [],
+      waitForNextSignal: async () => {
+        waitForNextSignalCalls += 1;
+        return createSnapshot({
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1711444500',
+          bucketStartTime: '2026-03-26T09:15:00.000Z',
+          bucketStartEpoch: 1711444500,
+          upPrice: 0.55,
+          downPrice: 0.45,
+          upAsk: 0.57,
+          downAsk: 0.47,
+          fetchedAt: '2026-03-26T09:15:10.000Z',
+        });
+      },
+      getSnapshotBySlug: async (slug) => {
+        assert.fail(`unexpected slug lookup for ${slug}`);
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Paper Single Asset Signal Session', cwd);
+
+  assert.equal(waitForNextSignalCalls, 1);
+  assert.equal(state.tradeCount, 1);
+  assert.equal(state.positions.ETH?.predictionSide, 'up');
+  assert.equal(state.positions.BTC, undefined);
 });

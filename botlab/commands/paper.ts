@@ -2,16 +2,13 @@ import path from 'node:path';
 import type { BotlabConfig } from '../core/types.js';
 import {
   createFixturePaperMarketSource,
-  createLivePaperMarketSource,
   fetchPaperMarketSnapshot,
   type PaperMarketAsset,
   type PaperMarketRef,
   type PaperMarketSnapshot,
 } from '../paper/market-source.js';
 import {
-  createHybridPaperMarketSource,
   createRealtimePaperMarketSource,
-  type HybridPaperMarketSource,
 } from '../paper/realtime-market-source.js';
 import { runPaperLoop, type PaperCycleReport } from '../paper/loop.js';
 import { loadPaperSessionState } from '../paper/session-store.js';
@@ -72,7 +69,12 @@ function buildRefFromSlug(asset: PaperMarketAsset, slug: string): PaperMarketRef
   };
 }
 
-type LoopMarketSourceWithClose = HybridPaperMarketSource;
+type LoopMarketSourceWithClose = {
+  getCurrentSnapshots: () => Promise<PaperMarketSnapshot[]>;
+  getSnapshotBySlug: (slug: string, asset: PaperMarketAsset) => Promise<PaperMarketSnapshot>;
+  waitForNextSignal?: (afterTimestamp: string, timeoutMs: number) => Promise<PaperMarketSnapshot>;
+  close: () => Promise<void>;
+};
 
 function createLoopMarketSource(config: BotlabConfig, fixturePath?: string): LoopMarketSourceWithClose {
   if (fixturePath) {
@@ -94,19 +96,26 @@ function createLoopMarketSource(config: BotlabConfig, fixturePath?: string): Loo
     };
   }
 
-  const pollingSource = {
-    getCurrentSnapshots: createLivePaperMarketSource(),
+  const realtimeSource = createRealtimePaperMarketSource({
+    reconnectDelayMs: 5_000,
+    maxReconnectAttempts: 5,
+    fatalOnReconnectExhausted: true,
+  });
+
+  return {
+    getCurrentSnapshots: () => realtimeSource.getLatestSnapshots(),
     getSnapshotBySlug: async (slug: string, asset: PaperMarketAsset): Promise<PaperMarketSnapshot> => {
       return fetchPaperMarketSnapshot(buildRefFromSlug(asset, slug));
     },
+    waitForNextSignal: (afterTimestamp: string, timeoutMs: number) => {
+      if (!realtimeSource.waitForNextSignal) {
+        throw new Error('Realtime paper source does not support single-asset signal waits.');
+      }
+
+      return realtimeSource.waitForNextSignal(afterTimestamp, timeoutMs);
+    },
+    close: () => realtimeSource.close(),
   };
-
-  const realtimeSource = createRealtimePaperMarketSource();
-
-  return createHybridPaperMarketSource({
-    pollingSource,
-    realtimeSource,
-  });
 }
 
 export async function paperCommand(

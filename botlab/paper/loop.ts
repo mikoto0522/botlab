@@ -40,6 +40,7 @@ const PAPER_TIMEFRAME = '5m';
 export interface PaperLoopMarketSource {
   getCurrentSnapshots: () => Promise<PaperMarketSnapshot[]>;
   getSnapshotBySlug?: (slug: string, asset: PaperSessionAsset) => Promise<PaperMarketSnapshot>;
+  waitForNextSignal?: (afterTimestamp: string, timeoutMs: number) => Promise<PaperMarketSnapshot>;
 }
 
 export interface RunPaperLoopInput {
@@ -107,8 +108,24 @@ function createSnapshotMaps(snapshots: PaperMarketSnapshot[]): {
   byAsset: Record<PaperSessionAsset, PaperMarketSnapshot>;
   bySlug: Map<string, PaperMarketSnapshot>;
 } {
+  const { byAsset, bySlug } = createPartialSnapshotMaps(snapshots);
+
+  if (!byAsset.BTC || !byAsset.ETH) {
+    throw new Error('Paper loop requires both BTC and ETH snapshots in every cycle');
+  }
+
+  return {
+    byAsset: byAsset as Record<PaperSessionAsset, PaperMarketSnapshot>,
+    bySlug,
+  };
+}
+
+function createPartialSnapshotMaps(snapshots: PaperMarketSnapshot[]): {
+  byAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>>;
+  bySlug: Map<string, PaperMarketSnapshot>;
+} {
   const bySlug = new Map<string, PaperMarketSnapshot>();
-  const byAsset = {} as Record<PaperSessionAsset, PaperMarketSnapshot>;
+  const byAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
 
   for (const snapshot of snapshots) {
     if (snapshot.asset !== 'BTC' && snapshot.asset !== 'ETH') {
@@ -120,10 +137,6 @@ function createSnapshotMaps(snapshots: PaperMarketSnapshot[]): {
 
     byAsset[snapshot.asset] = snapshot;
     bySlug.set(snapshot.slug, snapshot);
-  }
-
-  if (!byAsset.BTC || !byAsset.ETH) {
-    throw new Error('Paper loop requires both BTC and ETH snapshots in every cycle');
   }
 
   return { byAsset, bySlug };
@@ -221,10 +234,13 @@ function snapshotVolume(snapshot: PaperMarketSnapshot): number {
 function buildRelatedMarkets(
   currentAsset: PaperSessionAsset,
   history: PaperSessionHistoryMap,
-  snapshotsByAsset: Record<PaperSessionAsset, PaperMarketSnapshot>,
+  snapshotsByAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>>,
 ): BotlabRelatedMarketRuntime[] {
   const relatedAsset = currentAsset === 'BTC' ? 'ETH' : 'BTC';
   const snapshot = snapshotsByAsset[relatedAsset];
+  if (!snapshot) {
+    return [];
+  }
   const candles = buildSyntheticCandles(history[relatedAsset]);
   const price = requireSnapshotPrice(snapshot, 'upPrice');
   const upPrice = requireSnapshotPrice(snapshot, 'upPrice');
@@ -276,7 +292,7 @@ function buildStrategyContextForSnapshot(
   state: PaperSessionState,
   snapshot: PaperMarketSnapshot,
   history: PaperSessionHistoryMap,
-  snapshotsByAsset: Record<PaperSessionAsset, PaperMarketSnapshot>,
+  snapshotsByAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>>,
   now: string,
 ): BotlabStrategyContext {
   const candles = buildSyntheticCandles(history[snapshot.asset]);
@@ -472,6 +488,21 @@ function appendSettlementEvents(
   }
 }
 
+function rememberSnapshots(
+  snapshots: PaperMarketSnapshot[],
+  snapshotsByAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>>,
+  snapshotsBySlug: Map<string, PaperMarketSnapshot>,
+): void {
+  for (const snapshot of snapshots) {
+    if (snapshot.asset !== 'BTC' && snapshot.asset !== 'ETH') {
+      throw new Error(`Paper loop received unsupported asset ${snapshot.asset}`);
+    }
+
+    snapshotsByAsset[snapshot.asset] = snapshot;
+    snapshotsBySlug.set(snapshot.slug, snapshot);
+  }
+}
+
 export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopResult> {
   const strategyId = input.strategyId ?? DEFAULT_STRATEGY_ID;
   const feeModel = input.feeModel ?? DEFAULT_FEE_MODEL;
@@ -485,6 +516,197 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
   let cyclesCompleted = 0;
   let openedCount = 0;
   let settledCount = 0;
+
+  if (input.marketSource.waitForNextSignal) {
+    const latestSnapshotsByAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
+    const latestSnapshotsBySlug = new Map<string, PaperMarketSnapshot>();
+    const initialSnapshots = await input.marketSource.getCurrentSnapshots();
+    rememberSnapshots(initialSnapshots, latestSnapshotsByAsset, latestSnapshotsBySlug);
+    const pendingSignals = [...initialSnapshots].sort((left, right) => {
+      return Date.parse(left.fetchedAt) - Date.parse(right.fetchedAt);
+    });
+    let signalTimestamp = toCycleTimestamp(initialSnapshots);
+
+    while (input.maxCycles === undefined || cyclesCompleted < input.maxCycles) {
+      let cycleTimestamp = signalTimestamp || new Date().toISOString();
+
+      try {
+        const snapshot: PaperMarketSnapshot = pendingSignals.shift()
+          ?? await input.marketSource.waitForNextSignal(signalTimestamp, 0);
+        rememberSnapshots([snapshot], latestSnapshotsByAsset, latestSnapshotsBySlug);
+        signalTimestamp = snapshot.fetchedAt;
+        cycleTimestamp = snapshot.fetchedAt;
+
+        const snapshotCache = new Map<string, PaperMarketSnapshot>();
+        const settledThisCycle: SettlePaperPositionResult[] = [];
+        const closedThisCycle: ClosePaperPositionResult[] = [];
+        const openedThisCycle: OpenPaperPositionResult[] = [];
+        const openMarks: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
+        const decisionSummaries: PaperCycleDecisionSummary[] = [];
+        const asset = snapshot.asset;
+        const position = state.positions[asset];
+
+        if (hasOpenPaperPosition(position)) {
+          const positionSnapshot = await resolvePositionSnapshot(
+            asset,
+            position,
+            latestSnapshotsBySlug,
+            input.marketSource,
+            snapshotCache,
+          );
+
+          if (isSettledSnapshot(positionSnapshot)) {
+            settledThisCycle.push(
+              settlePaperPosition(state, asset, position, positionSnapshot, feeModel, positionSnapshot.fetchedAt),
+            );
+          } else {
+            openMarks[asset] = positionSnapshot;
+          }
+        }
+
+        state.history = {
+          ...cloneHistoryMap(state.history),
+          [asset]: upsertHistoryPoint(state.history[asset], snapshot),
+        };
+
+        if (!snapshot.closed) {
+          const context = buildStrategyContextForSnapshot(state, snapshot, state.history, latestSnapshotsByAsset, cycleTimestamp);
+          const decision = strategy.evaluate(context, structuredClone(strategyParams));
+          decisionSummaries.push({
+            asset,
+            action: decision.action,
+            side: decision.side ?? 'flat',
+            reason: decision.reason,
+            marketSlug: snapshot.slug,
+            upPrice: snapshot.upPrice,
+            downPrice: snapshot.downPrice,
+            upAsk: snapshot.upAsk,
+            downAsk: snapshot.downAsk,
+          });
+
+          appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
+
+          if (decision.action === 'sell') {
+            const livePosition = state.positions[asset];
+            if (hasOpenPaperPosition(livePosition)) {
+              const closed = closePaperPosition(state, asset, livePosition, snapshot, feeModel, cycleTimestamp);
+              if (closed) {
+                closedThisCycle.push(closed);
+              }
+              if (hasOpenPaperPosition(state.positions[asset])) {
+                openMarks[asset] = snapshot;
+              }
+            }
+          } else {
+            const opened = openPaperPosition(state, asset, snapshot, decision, feeModel, cycleTimestamp);
+            if (opened) {
+              openedThisCycle.push(opened);
+              openMarks[asset] = snapshot;
+              openedCount += 1;
+            } else if (hasOpenPaperPosition(state.positions[asset])) {
+              openMarks[asset] = snapshot;
+            }
+          }
+        }
+
+        for (const otherAsset of ['BTC', 'ETH'] as const) {
+          if (openMarks[otherAsset]) {
+            continue;
+          }
+
+          const otherPosition = state.positions[otherAsset];
+          if (!hasOpenPaperPosition(otherPosition)) {
+            continue;
+          }
+
+          const positionSnapshot = await resolvePositionSnapshot(
+            otherAsset,
+            otherPosition,
+            latestSnapshotsBySlug,
+            input.marketSource,
+            snapshotCache,
+          );
+
+          if (isSettledSnapshot(positionSnapshot)) {
+            settledThisCycle.push(
+              settlePaperPosition(state, otherAsset, otherPosition, positionSnapshot, feeModel, positionSnapshot.fetchedAt),
+            );
+            continue;
+          }
+
+          openMarks[otherAsset] = positionSnapshot;
+        }
+
+        state.cycleCount += 1;
+        settledCount += settledThisCycle.length;
+        settledCount += closedThisCycle.length;
+        state.equity = calculatePaperSessionEquity(state, openMarks);
+
+        savePaperSessionState(state, input.cwd);
+        appendSettlementEvents(input.sessionName, settledThisCycle, input.cwd);
+        appendCloseEvents(input.sessionName, closedThisCycle, input.cwd);
+        appendOpenEvents(input.sessionName, openedThisCycle, input.cwd);
+        appendPaperSessionEvent(input.sessionName, {
+          type: 'paper-cycle-complete',
+          timestamp: cycleTimestamp,
+          cycleCount: state.cycleCount,
+          cash: state.cash,
+          equity: state.equity,
+          openPositionCount: Object.values(state.positions).filter((paperPosition) => hasOpenPaperPosition(paperPosition)).length,
+          openedCount: openedThisCycle.length,
+          closedCount: closedThisCycle.length,
+          settledCount: settledThisCycle.length,
+          snapshots: {
+            BTC: latestSnapshotsByAsset.BTC ? summarizeSnapshot(latestSnapshotsByAsset.BTC) : undefined,
+            ETH: latestSnapshotsByAsset.ETH ? summarizeSnapshot(latestSnapshotsByAsset.ETH) : undefined,
+          },
+        }, input.cwd);
+        if (input.onCycleReport) {
+          await input.onCycleReport({
+            type: 'cycle',
+            timestamp: cycleTimestamp,
+            cycleCount: state.cycleCount,
+            cash: state.cash,
+            equity: state.equity,
+            openedCount: openedThisCycle.length,
+            closedCount: closedThisCycle.length,
+            settledCount: settledThisCycle.length,
+            decisions: decisionSummaries,
+            snapshots: {
+              BTC: latestSnapshotsByAsset.BTC ? summarizeSnapshot(latestSnapshotsByAsset.BTC) : undefined,
+              ETH: latestSnapshotsByAsset.ETH ? summarizeSnapshot(latestSnapshotsByAsset.ETH) : undefined,
+            } as Record<PaperSessionAsset, Record<string, unknown>>,
+          });
+        }
+      } catch (error) {
+        state.cycleCount += 1;
+        savePaperSessionState(state, input.cwd);
+        appendCycleErrorEvent(input.sessionName, cycleTimestamp, error, input.cwd);
+        if (input.onCycleReport) {
+          await input.onCycleReport({
+            type: 'error',
+            timestamp: cycleTimestamp,
+            cycleCount: state.cycleCount,
+            cash: state.cash,
+            equity: state.equity,
+            openedCount: 0,
+            closedCount: 0,
+            settledCount: 0,
+            errorMessage: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      cyclesCompleted += 1;
+    }
+
+    return {
+      state,
+      cyclesCompleted,
+      openedCount,
+      settledCount,
+    };
+  }
 
   while (input.maxCycles === undefined || cyclesCompleted < input.maxCycles) {
     let cycleTimestamp = new Date().toISOString();
