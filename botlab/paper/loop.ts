@@ -488,6 +488,10 @@ function appendSettlementEvents(
   }
 }
 
+function isFatalPaperLoopError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'RealtimeConnectionExhaustedError';
+}
+
 function rememberSnapshots(
   snapshots: PaperMarketSnapshot[],
   snapshotsByAsset: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>>,
@@ -695,6 +699,9 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             errorMessage: error instanceof Error ? error.message : String(error),
           });
         }
+        if (isFatalPaperLoopError(error)) {
+          throw error;
+        }
       }
 
       cyclesCompleted += 1;
@@ -850,6 +857,9 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           settledCount: 0,
           errorMessage: error instanceof Error ? error.message : String(error),
         });
+      }
+      if (isFatalPaperLoopError(error)) {
+        throw error;
       }
     }
 

@@ -562,6 +562,56 @@ test('runPaperLoop logs a failed cycle, keeps the session, and waits before retr
   assert.equal(events.some((event) => event.type === 'paper-cycle-complete'), true);
 });
 
+test('runPaperLoop stops immediately when realtime reconnect attempts are exhausted', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-fatal-error-'));
+  const strategyDir = writeAssetPaperStrategy('BTC');
+  const reports: Array<{ type: string; message?: string }> = [];
+
+  await assert.rejects(
+    () => runPaperLoop({
+      sessionName: 'Fatal Retry Session',
+      strategyId: 'paper-btc-test',
+      strategyDir,
+      cwd,
+      intervalMs: 30_000,
+      maxCycles: 3,
+      sleepMs: async () => {
+        assert.fail('paper realtime loop should not sleep after a fatal realtime disconnect');
+      },
+      onCycleReport: async (report) => {
+        reports.push({
+          type: report.type,
+          message: report.type === 'error' ? report.errorMessage : undefined,
+        });
+      },
+      marketSource: {
+        getCurrentSnapshots: async () => [],
+        waitForNextSignal: async () => {
+          const error = new Error('Realtime market connection exhausted 5 reconnect attempts.');
+          error.name = 'RealtimeConnectionExhaustedError';
+          throw error;
+        },
+        getSnapshotBySlug: async (slug) => {
+          assert.fail(`unexpected slug lookup for ${slug}`);
+        },
+      },
+    }),
+    /Realtime market connection exhausted 5 reconnect attempts\./,
+  );
+
+  const state = loadPaperSessionState('Fatal Retry Session', cwd);
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'Fatal Retry Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  assert.equal(state.cycleCount, 1);
+  assert.deepEqual(reports, [{
+    type: 'error',
+    message: 'Realtime market connection exhausted 5 reconnect attempts.',
+  }]);
+  assert.equal(events.some((event) => event.type === 'paper-cycle-error' && event.message === 'Realtime market connection exhausted 5 reconnect attempts.'), true);
+});
+
 test('runPaperLoop applies configured strategy parameter overrides to position sizing', async () => {
   const { runPaperLoop } = await import('../paper/loop.js');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-param-'));
