@@ -624,8 +624,11 @@ export async function runLiveLoop(input: RunLiveLoopInput): Promise<LiveLoopResu
     let cycleTimestamp = new Date().toISOString();
 
     try {
-      await syncLiveCashBalance(state, input.tradingClient);
-      const currentSnapshots = await input.marketSource.getCurrentSnapshots();
+      const [liveCash, currentSnapshots] = await Promise.all([
+        input.tradingClient.getCollateralBalance(),
+        input.marketSource.getCurrentSnapshots(),
+      ]);
+      state.cash = liveCash;
       const { byAsset: snapshotsByAsset, bySlug: snapshotsBySlug } = createSnapshotMaps(currentSnapshots);
       cycleTimestamp = toCycleTimestamp(currentSnapshots);
       const snapshotCache = new Map<string, PaperMarketSnapshot>();
