@@ -1,6 +1,13 @@
 import { calculateFee, type BacktestFeeModel } from '../backtest/fees.js';
 import type { BotlabStrategyDecision } from '../core/types.js';
-import type { PaperMarketSnapshot, PaperOrderBookLevel } from './market-source.js';
+import {
+  previewBuyExecution,
+  previewSellExecution,
+  type BuyExecutionPreview,
+  type ExecutionFillLevel,
+  type SellExecutionPreview,
+} from '../execution/order-book.js';
+import type { PaperMarketSnapshot } from './market-source.js';
 import type {
   PaperSessionAsset,
   PaperSessionPosition,
@@ -8,12 +15,7 @@ import type {
   PaperSessionState,
 } from './types.js';
 
-export interface PaperExecutionFillLevel {
-  price: number;
-  shares: number;
-  grossAmount: number;
-  fee: number;
-}
+export type PaperExecutionFillLevel = ExecutionFillLevel;
 
 export interface OpenPaperPositionResult {
   asset: PaperSessionAsset;
@@ -69,36 +71,8 @@ export interface ClosePaperPositionResult {
   closedAt: string;
 }
 
-interface PaperBuyExecution {
-  requestedStake: number;
-  shares: number;
-  avgPrice: number;
-  totalCost: number;
-  totalFee: number;
-  partialFill: boolean;
-  levelsConsumed: number;
-  bookVisible: boolean;
-  quotedPrice: number | null;
-  fills: PaperExecutionFillLevel[];
-}
-
-interface PaperSellExecution {
-  requestedShares: number;
-  shares: number;
-  remainingShares: number;
-  avgPrice: number;
-  proceeds: number;
-  totalFee: number;
-  partialFill: boolean;
-  levelsConsumed: number;
-  fills: PaperExecutionFillLevel[];
-}
-
-interface PaperLiquidityLevels {
-  levels: PaperOrderBookLevel[];
-  depthVisible: boolean;
-  quotedPrice: number | null;
-}
+type PaperBuyExecution = BuyExecutionPreview;
+type PaperSellExecution = SellExecutionPreview;
 
 function isFinitePositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -130,231 +104,25 @@ function inferPredictionSide(position: PaperSessionPosition): PaperSessionPredic
   return null;
 }
 
-function getEntryPrice(snapshot: PaperMarketSnapshot, side: PaperSessionPredictionSide): number {
-  return side === 'up'
-    ? snapshot.upAsk ?? snapshot.upPrice ?? 0
-    : snapshot.downAsk ?? snapshot.downPrice ?? 0;
-}
-
 function getExitPrice(snapshot: PaperMarketSnapshot, side: PaperSessionPredictionSide): number {
   return side === 'up'
     ? snapshot.upPrice ?? 0
     : snapshot.downPrice ?? 0;
 }
 
-function getEntryLiquidityLevels(
+function getMarkExitLiquidityLevels(
   snapshot: PaperMarketSnapshot,
   side: PaperSessionPredictionSide,
-): PaperLiquidityLevels {
-  if (hasOnlyPlaceholderOutcomeAsks(snapshot)) {
-    return {
-      levels: [],
-      depthVisible: false,
-      quotedPrice: readBestOutcomeAsk(snapshot, side),
-    };
-  }
-
-  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
-  if (orderBook && orderBook.asks.length > 0) {
-    return {
-      levels: orderBook.asks,
-      depthVisible: true,
-      quotedPrice: readBestOutcomeAsk(snapshot, side),
-    };
-  }
-
-  const fallbackPrice = getEntryPrice(snapshot, side);
-  return {
-    levels: [],
-    depthVisible: false,
-    quotedPrice: isFinitePositiveNumber(fallbackPrice) ? fallbackPrice : null,
-  };
-}
-
-function getExitLiquidityLevels(
-  snapshot: PaperMarketSnapshot,
-  side: PaperSessionPredictionSide,
-): PaperLiquidityLevels {
+): Array<{ price: number; size: number }> {
   const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
   if (orderBook && orderBook.bids.length > 0) {
-    return {
-      levels: orderBook.bids,
-      depthVisible: true,
-      quotedPrice: orderBook.bids[0]?.price ?? null,
-    };
+    return orderBook.bids;
   }
 
   const fallbackPrice = getExitPrice(snapshot, side);
-  if (!Number.isFinite(fallbackPrice) || fallbackPrice < 0 || fallbackPrice > 1) {
-    return {
-      levels: [],
-      depthVisible: false,
-      quotedPrice: null,
-    };
-  }
-
-  return {
-    levels: [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }],
-    depthVisible: false,
-    quotedPrice: fallbackPrice,
-  };
-}
-
-function readBestOutcomeAsk(snapshot: PaperMarketSnapshot, side: PaperSessionPredictionSide): number | null {
-  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
-  const orderBookAsk = orderBook?.asks[0]?.price;
-  if (isFinitePositiveNumber(orderBookAsk)) {
-    return orderBookAsk;
-  }
-
-  const fallbackAsk = side === 'up' ? snapshot.upAsk : snapshot.downAsk;
-  return isFinitePositiveNumber(fallbackAsk) ? fallbackAsk : null;
-}
-
-function hasOnlyPlaceholderOutcomeAsks(snapshot: PaperMarketSnapshot): boolean {
-  const upBestAsk = readBestOutcomeAsk(snapshot, 'up');
-  const downBestAsk = readBestOutcomeAsk(snapshot, 'down');
-  if (upBestAsk === null || downBestAsk === null) {
-    return false;
-  }
-
-  return (
-    upBestAsk >= 0.95
-    && downBestAsk >= 0.95
-    && snapshot.upPrice !== null
-    && snapshot.upPrice > 0.05
-    && snapshot.upPrice < 0.95
-    && snapshot.downPrice !== null
-    && snapshot.downPrice > 0.05
-    && snapshot.downPrice < 0.95
-  );
-}
-
-function executeBuyAgainstOrderBook(
-  snapshot: PaperMarketSnapshot,
-  side: PaperSessionPredictionSide,
-  requestedStake: number,
-  feeModel: BacktestFeeModel,
-): PaperBuyExecution | null {
-  const { levels, depthVisible, quotedPrice } = getEntryLiquidityLevels(snapshot, side);
-  let remainingBudget = requestedStake;
-  let totalShares = 0;
-  let grossCost = 0;
-  let totalFee = 0;
-  const fills: PaperExecutionFillLevel[] = [];
-
-  for (const level of levels) {
-    if (!isFinitePositiveNumber(level.price) || !isFinitePositiveNumber(level.size)) {
-      continue;
-    }
-
-    const perShareCost = level.price + calculateFee(feeModel, 1, level.price);
-    if (!isFinitePositiveNumber(perShareCost)) {
-      continue;
-    }
-
-    const affordableShares = floorShares(remainingBudget / perShareCost);
-    const availableShares = floorShares(level.size);
-    const shares = floorShares(Math.min(affordableShares, availableShares));
-    if (!isFinitePositiveNumber(shares)) {
-      continue;
-    }
-
-    const fee = calculateFee(feeModel, shares, level.price);
-    const grossAmount = shares * level.price;
-    const totalLevelCost = grossAmount + fee;
-    if (!Number.isFinite(totalLevelCost) || totalLevelCost > remainingBudget + 1e-9) {
-      continue;
-    }
-
-    remainingBudget -= totalLevelCost;
-    totalShares += shares;
-    grossCost += grossAmount;
-    totalFee += fee;
-    fills.push({
-      price: level.price,
-      shares,
-      grossAmount,
-      fee,
-    });
-  }
-
-  if (!isFinitePositiveNumber(totalShares)) {
-    return null;
-  }
-
-  return {
-    requestedStake,
-    shares: totalShares,
-    avgPrice: grossCost / totalShares,
-    totalCost: grossCost + totalFee,
-    totalFee,
-    partialFill: depthVisible && requestedStake - (grossCost + totalFee) > 1e-9,
-    levelsConsumed: fills.length,
-    bookVisible: depthVisible,
-    quotedPrice,
-    fills,
-  };
-}
-
-function executeSellAgainstOrderBook(
-  snapshot: PaperMarketSnapshot,
-  side: PaperSessionPredictionSide,
-  requestedShares: number,
-  feeModel: BacktestFeeModel,
-): PaperSellExecution | null {
-  const { levels, depthVisible } = getExitLiquidityLevels(snapshot, side);
-  let remainingShares = requestedShares;
-  let totalShares = 0;
-  let proceeds = 0;
-  let totalFee = 0;
-  const fills: PaperExecutionFillLevel[] = [];
-
-  for (const level of levels) {
-    if (!isFinitePositiveNumber(level.size) || !Number.isFinite(level.price) || level.price < 0 || level.price > 1) {
-      continue;
-    }
-
-    const availableShares = floorShares(level.size);
-    const shares = floorShares(Math.min(remainingShares, availableShares));
-    if (!isFinitePositiveNumber(shares)) {
-      continue;
-    }
-
-    const fee = calculateFee(feeModel, shares, level.price);
-    const grossAmount = shares * level.price;
-
-    remainingShares = floorShares(remainingShares - shares);
-    totalShares += shares;
-    proceeds += grossAmount;
-    totalFee += fee;
-    fills.push({
-      price: level.price,
-      shares,
-      grossAmount,
-      fee,
-    });
-
-    if (remainingShares <= 0) {
-      break;
-    }
-  }
-
-  if (!isFinitePositiveNumber(totalShares)) {
-    return null;
-  }
-
-  return {
-    requestedShares,
-    shares: totalShares,
-    remainingShares,
-    avgPrice: proceeds / totalShares,
-    proceeds,
-    totalFee,
-    partialFill: depthVisible && remainingShares > 0,
-    levelsConsumed: fills.length,
-    fills,
-  };
+  return Number.isFinite(fallbackPrice) && fallbackPrice >= 0 && fallbackPrice <= 1
+    ? [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }]
+    : [];
 }
 
 export function hasOpenPaperPosition(position: PaperSessionPosition | undefined): position is PaperSessionPosition {
@@ -381,7 +149,7 @@ export function markPaperPositionValue(
     return 0;
   }
 
-  const { levels } = getExitLiquidityLevels(snapshot, side);
+  const levels = getMarkExitLiquidityLevels(snapshot, side);
   let remainingShares = shares;
   let value = 0;
 
@@ -452,7 +220,7 @@ export function openPaperPosition(
     return null;
   }
 
-  const execution = executeBuyAgainstOrderBook(snapshot, side, requestedStake, feeModel);
+  const execution = previewBuyExecution(snapshot, side, requestedStake, feeModel);
   if (!execution || !isFinitePositiveNumber(execution.totalCost) || execution.totalCost > state.cash + 1e-9) {
     return null;
   }
@@ -563,7 +331,7 @@ export function closePaperPosition(
     throw new Error(`Paper position for ${asset} is missing entry details needed to close`);
   }
 
-  const execution = executeSellAgainstOrderBook(snapshot, side, requestedShares, feeModel);
+  const execution = previewSellExecution(snapshot, side, requestedShares, feeModel);
   if (!execution) {
     return null;
   }

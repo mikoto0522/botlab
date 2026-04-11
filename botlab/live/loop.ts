@@ -14,10 +14,17 @@ import {
   settlePaperPosition,
   type SettlePaperPositionResult,
 } from '../paper/executor.js';
+import {
+  hasOnlyPlaceholderOutcomeAsks,
+  previewBuyExecution,
+  previewSellExecution,
+  type BuyExecutionPreview,
+  type ExecutionFillLevel,
+  type SellExecutionPreview,
+} from '../execution/order-book.js';
 import type {
   PaperMarketDetail,
   PaperMarketSnapshot,
-  PaperOrderBookLevel,
 } from '../paper/market-source.js';
 import { appendLiveSessionEvent, resumeLiveSessionState, saveLiveSessionState } from './session-store.js';
 import {
@@ -103,37 +110,9 @@ export interface LiveCycleReport {
   errorMessage?: string;
 }
 
-interface LiveExecutionFillLevel {
-  price: number;
-  shares: number;
-  grossAmount: number;
-  fee: number;
-}
-
-interface LiveBuyPreview {
-  requestedStake: number;
-  shares: number;
-  avgPrice: number;
-  totalCost: number;
-  totalFee: number;
-  partialFill: boolean;
-  levelsConsumed: number;
-  bookVisible: boolean;
-  quotedPrice: number | null;
-  fills: LiveExecutionFillLevel[];
-}
-
-interface LiveSellPreview {
-  requestedShares: number;
-  shares: number;
-  remainingShares: number;
-  avgPrice: number;
-  proceeds: number;
-  totalFee: number;
-  partialFill: boolean;
-  levelsConsumed: number;
-  fills: LiveExecutionFillLevel[];
-}
+type LiveExecutionFillLevel = ExecutionFillLevel;
+type LiveBuyPreview = BuyExecutionPreview;
+type LiveSellPreview = SellExecutionPreview;
 
 function isFinitePositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -420,181 +399,6 @@ function summarizeSnapshot(snapshot: PaperMarketSnapshot): Record<string, unknow
   };
 }
 
-function getEntryLiquidityLevels(snapshot: PaperMarketSnapshot, side: 'up' | 'down'): PaperOrderBookLevel[] {
-  if (hasOnlyPlaceholderOutcomeAsks(snapshot)) {
-    return [];
-  }
-
-  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
-  if (orderBook && orderBook.asks.length > 0) {
-    return orderBook.asks;
-  }
-  return [];
-}
-
-function getExitLiquidityLevels(snapshot: PaperMarketSnapshot, side: 'up' | 'down'): PaperOrderBookLevel[] {
-  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
-  if (orderBook && orderBook.bids.length > 0) {
-    return orderBook.bids;
-  }
-
-  const fallbackPrice = side === 'up'
-    ? snapshot.upPrice ?? 0
-    : snapshot.downPrice ?? 0;
-
-  return Number.isFinite(fallbackPrice) && fallbackPrice >= 0 && fallbackPrice <= 1
-    ? [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }]
-    : [];
-}
-
-function readBestOutcomeAsk(snapshot: PaperMarketSnapshot, side: 'up' | 'down'): number | null {
-  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
-  const orderBookAsk = orderBook?.asks[0]?.price;
-  if (isFinitePositiveNumber(orderBookAsk)) {
-    return orderBookAsk;
-  }
-
-  const fallbackAsk = side === 'up' ? snapshot.upAsk : snapshot.downAsk;
-  return isFinitePositiveNumber(fallbackAsk) ? fallbackAsk : null;
-}
-
-function hasOnlyPlaceholderOutcomeAsks(snapshot: PaperMarketSnapshot): boolean {
-  const upBestAsk = readBestOutcomeAsk(snapshot, 'up');
-  const downBestAsk = readBestOutcomeAsk(snapshot, 'down');
-  if (upBestAsk === null || downBestAsk === null) {
-    return false;
-  }
-
-  return (
-    upBestAsk >= 0.95
-    && downBestAsk >= 0.95
-    && snapshot.upPrice !== null
-    && snapshot.upPrice > 0.05
-    && snapshot.upPrice < 0.95
-    && snapshot.downPrice !== null
-    && snapshot.downPrice > 0.05
-    && snapshot.downPrice < 0.95
-  );
-}
-
-function previewBuyExecution(
-  snapshot: PaperMarketSnapshot,
-  side: 'up' | 'down',
-  requestedStake: number,
-  feeModel: BacktestFeeModel,
-): LiveBuyPreview | null {
-  const levels = getEntryLiquidityLevels(snapshot, side);
-  const quotedPrice = readBestOutcomeAsk(snapshot, side);
-  let remainingBudget = requestedStake;
-  let totalShares = 0;
-  let grossCost = 0;
-  let totalFee = 0;
-  const fills: LiveExecutionFillLevel[] = [];
-
-  for (const level of levels) {
-    if (!isFinitePositiveNumber(level.price) || !isFinitePositiveNumber(level.size)) {
-      continue;
-    }
-
-    const perShareCost = level.price + calculateFee(feeModel, 1, level.price);
-    if (!isFinitePositiveNumber(perShareCost)) {
-      continue;
-    }
-
-    const affordableShares = floorShares(remainingBudget / perShareCost);
-    const availableShares = floorShares(level.size);
-    const shares = floorShares(Math.min(affordableShares, availableShares));
-    if (!isFinitePositiveNumber(shares)) {
-      continue;
-    }
-
-    const fee = calculateFee(feeModel, shares, level.price);
-    const grossAmount = shares * level.price;
-    const totalLevelCost = grossAmount + fee;
-    if (!Number.isFinite(totalLevelCost) || totalLevelCost > remainingBudget + 1e-9) {
-      continue;
-    }
-
-    remainingBudget -= totalLevelCost;
-    totalShares += shares;
-    grossCost += grossAmount;
-    totalFee += fee;
-    fills.push({ price: level.price, shares, grossAmount, fee });
-  }
-
-  if (!isFinitePositiveNumber(totalShares)) {
-    return null;
-  }
-
-  return {
-    requestedStake,
-    shares: totalShares,
-    avgPrice: grossCost / totalShares,
-    totalCost: grossCost + totalFee,
-    totalFee,
-    partialFill: requestedStake - (grossCost + totalFee) > 1e-9,
-    levelsConsumed: fills.length,
-    bookVisible: true,
-    quotedPrice,
-    fills,
-  };
-}
-
-function previewSellExecution(
-  snapshot: PaperMarketSnapshot,
-  side: 'up' | 'down',
-  requestedShares: number,
-  feeModel: BacktestFeeModel,
-): LiveSellPreview | null {
-  const levels = getExitLiquidityLevels(snapshot, side);
-  let remainingShares = requestedShares;
-  let totalShares = 0;
-  let proceeds = 0;
-  let totalFee = 0;
-  const fills: LiveExecutionFillLevel[] = [];
-
-  for (const level of levels) {
-    if (!isFinitePositiveNumber(level.size) || !Number.isFinite(level.price) || level.price < 0 || level.price > 1) {
-      continue;
-    }
-
-    const availableShares = floorShares(level.size);
-    const shares = floorShares(Math.min(remainingShares, availableShares));
-    if (!isFinitePositiveNumber(shares)) {
-      continue;
-    }
-
-    const fee = calculateFee(feeModel, shares, level.price);
-    const grossAmount = shares * level.price;
-
-    remainingShares = floorShares(remainingShares - shares);
-    totalShares += shares;
-    proceeds += grossAmount;
-    totalFee += fee;
-    fills.push({ price: level.price, shares, grossAmount, fee });
-
-    if (remainingShares <= 0) {
-      break;
-    }
-  }
-
-  if (!isFinitePositiveNumber(totalShares)) {
-    return null;
-  }
-
-  return {
-    requestedShares,
-    shares: totalShares,
-    remainingShares,
-    avgPrice: proceeds / totalShares,
-    proceeds,
-    totalFee,
-    partialFill: remainingShares > 0,
-    levelsConsumed: fills.length,
-    fills,
-  };
-}
-
 function parseTickSize(tickSize: PaperMarketDetail['tickSize']): number | null {
   const parsed = Number.parseFloat(String(tickSize));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -702,6 +506,8 @@ function withSellSlippageLimit(
       totalFee,
       partialFill: shares + 1e-9 < preview.requestedShares,
       levelsConsumed: fills.length,
+      bookVisible: preview.bookVisible,
+      quotedPrice: preview.quotedPrice,
       fills,
     },
   };
