@@ -23,10 +23,6 @@ export interface BuyExecutionPreview {
   fills: ExecutionFillLevel[];
 }
 
-export interface BuyExecutionPreviewOptions {
-  allowQuotedFallback?: boolean;
-}
-
 export interface SellExecutionPreview {
   requestedShares: number;
   shares: number;
@@ -45,14 +41,6 @@ interface LiquidityLevels {
   levels: PaperOrderBookLevel[];
   depthVisible: boolean;
   quotedPrice: number | null;
-}
-
-function createQuotedFallbackLevel(quotedPrice: number | null): PaperOrderBookLevel[] {
-  if (!isFinitePositiveNumber(quotedPrice)) {
-    return [];
-  }
-
-  return [{ price: quotedPrice, size: Number.MAX_SAFE_INTEGER }];
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -112,7 +100,6 @@ export function hasOnlyPlaceholderOutcomeAsks(snapshot: PaperMarketSnapshot): bo
 function getEntryLiquidityLevels(
   snapshot: PaperMarketSnapshot,
   side: OutcomeSide,
-  options: BuyExecutionPreviewOptions,
 ): LiquidityLevels {
   if (hasOnlyPlaceholderOutcomeAsks(snapshot)) {
     return {
@@ -133,9 +120,7 @@ function getEntryLiquidityLevels(
 
   const fallbackPrice = getEntryPrice(snapshot, side);
   return {
-    levels: options.allowQuotedFallback
-      ? createQuotedFallbackLevel(isFinitePositiveNumber(fallbackPrice) ? fallbackPrice : null)
-      : [],
+    levels: [],
     depthVisible: false,
     quotedPrice: isFinitePositiveNumber(fallbackPrice) ? fallbackPrice : null,
   };
@@ -152,18 +137,12 @@ function getExitLiquidityLevels(snapshot: PaperMarketSnapshot, side: OutcomeSide
   }
 
   const fallbackPrice = getExitPrice(snapshot, side);
-  if (!Number.isFinite(fallbackPrice) || fallbackPrice < 0 || fallbackPrice > 1) {
-    return {
-      levels: [],
-      depthVisible: false,
-      quotedPrice: null,
-    };
-  }
-
   return {
-    levels: [{ price: fallbackPrice, size: Number.MAX_SAFE_INTEGER }],
+    levels: [],
     depthVisible: false,
-    quotedPrice: fallbackPrice,
+    quotedPrice: Number.isFinite(fallbackPrice) && fallbackPrice >= 0 && fallbackPrice <= 1
+      ? fallbackPrice
+      : null,
   };
 }
 
@@ -172,9 +151,8 @@ export function previewBuyExecution(
   side: OutcomeSide,
   requestedStake: number,
   feeModel: BacktestFeeModel,
-  options: BuyExecutionPreviewOptions = {},
 ): BuyExecutionPreview | null {
-  const { levels, depthVisible, quotedPrice } = getEntryLiquidityLevels(snapshot, side, options);
+  const { levels, depthVisible, quotedPrice } = getEntryLiquidityLevels(snapshot, side);
   let remainingBudget = requestedStake;
   let totalShares = 0;
   let grossCost = 0;
@@ -226,6 +204,39 @@ export function previewBuyExecution(
     levelsConsumed: fills.length,
     bookVisible: depthVisible,
     quotedPrice,
+    fills,
+  };
+}
+
+export function applyBuySlippageLimit(
+  preview: BuyExecutionPreview,
+  maxPriceSlippagePct: number,
+): BuyExecutionPreview | null {
+  const anchorPrice = preview.fills[0]?.price ?? preview.avgPrice;
+  if (!isFinitePositiveNumber(anchorPrice)) {
+    return null;
+  }
+
+  const maxAllowedPrice = anchorPrice * (1 + Math.max(0, maxPriceSlippagePct));
+  const fills = preview.fills.filter((fill) => fill.price <= maxAllowedPrice + 1e-9);
+  const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
+  if (!isFinitePositiveNumber(shares)) {
+    return null;
+  }
+
+  const grossCost = fills.reduce((sum, fill) => sum + fill.grossAmount, 0);
+  const totalFee = fills.reduce((sum, fill) => sum + fill.fee, 0);
+
+  return {
+    requestedStake: preview.requestedStake,
+    shares,
+    avgPrice: grossCost / shares,
+    totalCost: grossCost + totalFee,
+    totalFee,
+    partialFill: preview.requestedStake - (grossCost + totalFee) > 1e-9,
+    levelsConsumed: fills.length,
+    bookVisible: preview.bookVisible,
+    quotedPrice: preview.quotedPrice,
     fills,
   };
 }
@@ -283,6 +294,40 @@ export function previewSellExecution(
     levelsConsumed: fills.length,
     bookVisible: depthVisible,
     quotedPrice,
+    fills,
+  };
+}
+
+export function applySellSlippageLimit(
+  preview: SellExecutionPreview,
+  maxPriceSlippagePct: number,
+): SellExecutionPreview | null {
+  const anchorPrice = preview.fills[0]?.price ?? preview.avgPrice;
+  if (!Number.isFinite(anchorPrice) || anchorPrice < 0) {
+    return null;
+  }
+
+  const minAllowedPrice = anchorPrice * (1 - Math.max(0, maxPriceSlippagePct));
+  const fills = preview.fills.filter((fill) => fill.price + 1e-9 >= minAllowedPrice);
+  const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
+  if (!isFinitePositiveNumber(shares)) {
+    return null;
+  }
+
+  const proceeds = fills.reduce((sum, fill) => sum + fill.grossAmount, 0);
+  const totalFee = fills.reduce((sum, fill) => sum + fill.fee, 0);
+
+  return {
+    requestedShares: preview.requestedShares,
+    shares,
+    remainingShares: floorShares(Math.max(0, preview.requestedShares - shares)),
+    avgPrice: proceeds / shares,
+    proceeds,
+    totalFee,
+    partialFill: shares + 1e-9 < preview.requestedShares,
+    levelsConsumed: fills.length,
+    bookVisible: preview.bookVisible,
+    quotedPrice: preview.quotedPrice,
     fills,
   };
 }

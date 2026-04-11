@@ -129,7 +129,7 @@ test('manualLiveOrderCommand submits one current-round live buy and reports the 
 
   assert.equal(buyCalls.length, 1);
   assert.equal(buyCalls[0]?.amount, 1);
-  assert.equal(buyCalls[0]?.priceLimit, 0.55);
+  assert.equal(buyCalls[0]?.priceLimit, 0.56);
   assert.match(output, /Manual Live Order Result/);
   assert.match(output, /Asset: BTC/);
   assert.match(output, /Side: up/);

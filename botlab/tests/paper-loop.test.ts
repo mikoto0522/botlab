@@ -661,7 +661,7 @@ test('runPaperLoop partially fills an entry when the order book cannot satisfy t
   assert.equal(openEvent?.levelsConsumed, 2);
 });
 
-test('runPaperLoop opens an entry from a quoted fallback ask when visible ask depth is missing', async () => {
+test('runPaperLoop skips an entry when visible ask depth is missing', async () => {
   const { runPaperLoop } = await import('../paper/loop.js');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-no-depth-open-'));
   const strategyDir = writeParametrizedPaperStrategy();
@@ -720,13 +720,9 @@ test('runPaperLoop opens an entry from a quoted fallback ask when visible ask de
   const state = loadPaperSessionState('No Depth Open Session', cwd, { startingCash: 100 });
   const { eventsPath } = resolvePaperSessionPaths(cwd, 'No Depth Open Session');
   const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
-  const openEvent = events.find((event) => event.type === 'paper-position-opened');
-
-  assert.equal(state.tradeCount, 1);
-  assert.equal(state.positions.BTC?.predictionSide, 'up');
-  assert.equal(events.some((event) => event.type === 'paper-position-opened'), true);
-  assert.equal(openEvent?.bookVisible, false);
-  assert.equal(openEvent?.quotedPrice, 0.43);
+  assert.equal(state.tradeCount, 0);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(events.some((event) => event.type === 'paper-position-opened'), false);
 });
 
 test('runPaperLoop partially closes a position when the order book cannot absorb all held shares', async () => {

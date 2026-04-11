@@ -326,13 +326,13 @@ test('runLiveLoop opens a live position and records the real fill', async () => 
   assert.equal(result.cyclesCompleted, 1);
   assert.equal(buyCalls.length, 1);
   assert.equal(buyCalls[0]?.amount, 1);
-  assert.equal(buyCalls[0]?.priceLimit, 0.55);
+  assert.equal(buyCalls[0]?.priceLimit, 0.56);
   assert.equal(state.tradeCount, 1);
   assert.equal(state.positions.BTC?.predictionSide, 'up');
   assert.equal(state.positions.BTC?.shares, 1.88);
   assert.equal(state.positions.BTC?.marketSlug, 'btc-updown-5m-1775649600');
   assert.equal(openEvent?.quotedPrice, 0.53);
-  assert.equal(openEvent?.priceLimit, 0.55);
+  assert.equal(openEvent?.priceLimit, 0.56);
   assert.equal(openEvent?.bookVisible, true);
   assert.equal(openEvent?.previewAveragePrice, 0.53);
   assert.equal(openEvent?.previewShares, 1.85);
@@ -537,7 +537,7 @@ test('runLiveLoop closes a live position through the trading client on a later c
 
   assert.equal(sellCalls.length, 1);
   assert.equal(sellCalls[0]?.shares, 1.88);
-  assert.equal(sellCalls[0]?.priceLimit, 0.5);
+  assert.equal(sellCalls[0]?.priceLimit, 0.49);
   assert.equal(state.positions.BTC, undefined);
   assert.equal(events.some((event) => event.type === 'live-position-closed'), true);
   assert.equal(state.cash > 10.22, true);
@@ -695,7 +695,7 @@ test('runLiveLoop refreshes the execution snapshot before a live buy and prices 
 
   assert.deepEqual(refreshedSlugs, ['btc-updown-5m-1775650200']);
   assert.equal(buyCalls.length, 1);
-  assert.equal(buyCalls[0]?.priceLimit, 0.57);
+  assert.equal(buyCalls[0]?.priceLimit, 0.58);
 });
 
 test('runLiveLoop rounds a buy slippage cap up to the next tick when the percentage lands between ticks', async () => {
@@ -817,7 +817,7 @@ test('runLiveLoop rounds a buy slippage cap up to the next tick when the percent
   });
 
   assert.equal(buyCalls.length, 1);
-  assert.equal(buyCalls[0]?.priceLimit, 0.45);
+  assert.equal(buyCalls[0]?.priceLimit, 0.47);
 });
 
 test('runLiveLoop caps a buy price limit at the exchange maximum instead of rounding up to 1', async () => {
@@ -1228,6 +1228,156 @@ test('runLiveLoop skips a buy when the refreshed snapshot has no visible ask dep
   assert.equal(state.cash, 30);
 });
 
+test('runLiveLoop skips a buy when the visible book would need more than 5% slippage', async () => {
+  const { runLiveLoop } = await import('../live/loop.js');
+  const { loadLiveSessionState } = await import('../live/session-store.js');
+  const strategyDir = writeLiveBuyStrategy();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-live-slippage-buy-'));
+  const buyCalls: Array<Record<string, unknown>> = [];
+
+  await runLiveLoop({
+    sessionName: 'Live Slippage Buy Session',
+    strategyId: 'live-buy-test',
+    strategyDir,
+    cwd,
+    startingCash: 30,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 1,
+    stakeOverrideUsd: 1,
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        {
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1775652300',
+          question: 'Bitcoin Up or Down - slippage buy',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:45:00.000Z',
+          endDate: '2026-04-08T12:50:00.000Z',
+          bucketStartTime: '2026-04-08T12:45:00.000Z',
+          bucketStartEpoch: 1775652300,
+          upPrice: 0.49,
+          downPrice: 0.51,
+          upAsk: 0.5,
+          downAsk: 0.53,
+          upOrderBook: {
+            bids: [{ price: 0.49, size: 50 }],
+            asks: [
+              { price: 0.5, size: 1 },
+              { price: 0.54, size: 50 },
+            ],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.51, size: 50 }],
+            asks: [{ price: 0.53, size: 50 }],
+          },
+          volume: 900,
+          fetchedAt: '2026-04-08T12:46:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+        {
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1775652300',
+          question: 'Ethereum Up or Down - slippage buy',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:45:00.000Z',
+          endDate: '2026-04-08T12:50:00.000Z',
+          bucketStartTime: '2026-04-08T12:45:00.000Z',
+          bucketStartEpoch: 1775652300,
+          upPrice: 0.5,
+          downPrice: 0.5,
+          upAsk: 0.51,
+          downAsk: 0.51,
+          upOrderBook: {
+            bids: [{ price: 0.5, size: 50 }],
+            asks: [{ price: 0.51, size: 50 }],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.5, size: 50 }],
+            asks: [{ price: 0.51, size: 50 }],
+          },
+          volume: 900,
+          fetchedAt: '2026-04-08T12:46:00.000Z',
+          downAskDerivedFromBestBid: false,
+        },
+      ],
+      getSnapshotBySlug: async (slug, asset) => {
+        assert.equal(asset, 'BTC');
+
+        return {
+          asset: 'BTC',
+          slug,
+          question: 'Bitcoin Up or Down - slippage refresh',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-04-08T12:45:00.000Z',
+          endDate: '2026-04-08T12:50:00.000Z',
+          bucketStartTime: '2026-04-08T12:45:00.000Z',
+          bucketStartEpoch: 1775652300,
+          upPrice: 0.49,
+          downPrice: 0.51,
+          upAsk: 0.5,
+          downAsk: 0.53,
+          upOrderBook: {
+            bids: [{ price: 0.49, size: 50 }],
+            asks: [
+              { price: 0.5, size: 1 },
+              { price: 0.54, size: 50 },
+            ],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.51, size: 50 }],
+            asks: [{ price: 0.53, size: 50 }],
+          },
+          volume: 900,
+          fetchedAt: '2026-04-08T12:46:02.000Z',
+          downAskDerivedFromBestBid: false,
+        };
+      },
+      getMarketDetail: async (slug, asset) => ({
+        asset,
+        slug,
+        question: `${asset} detail`,
+        active: true,
+        closed: false,
+        acceptingOrders: true,
+        eventStartTime: '2026-04-08T12:45:00.000Z',
+        endDate: '2026-04-08T12:50:00.000Z',
+        bucketStartTime: '2026-04-08T12:45:00.000Z',
+        bucketStartEpoch: 1775652300,
+        upLabel: 'Up',
+        downLabel: 'Down',
+        upTokenId: `${asset.toLowerCase()}-up-token`,
+        downTokenId: `${asset.toLowerCase()}-down-token`,
+        volume: 900,
+        tickSize: '0.01',
+        negRisk: false,
+      }),
+    },
+    tradingClient: {
+      getCollateralBalance: async () => 30,
+      buyOutcome: async (input) => {
+        buyCalls.push(input as unknown as Record<string, unknown>);
+        return null;
+      },
+      sellOutcome: async () => {
+        throw new Error('unexpected sell call');
+      },
+    },
+  });
+
+  const state = loadLiveSessionState('Live Slippage Buy Session', cwd, { startingCash: 30 });
+
+  assert.equal(buyCalls.length, 0);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(state.cash, 30);
+});
+
 test('runLiveLoop rounds a sell slippage floor down to the next tick when the percentage lands between ticks', async () => {
   const { runLiveLoop } = await import('../live/loop.js');
   const strategyDir = writeLiveSellStrategy();
@@ -1418,5 +1568,5 @@ test('runLiveLoop rounds a sell slippage floor down to the next tick when the pe
   });
 
   assert.equal(sellCalls.length, 1);
-  assert.equal(sellCalls[0]?.priceLimit, 0.43);
+  assert.equal(sellCalls[0]?.priceLimit, 0.41);
 });

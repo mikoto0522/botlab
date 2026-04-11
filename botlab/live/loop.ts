@@ -15,6 +15,8 @@ import {
   type SettlePaperPositionResult,
 } from '../paper/executor.js';
 import {
+  applyBuySlippageLimit,
+  applySellSlippageLimit,
   hasOnlyPlaceholderOutcomeAsks,
   previewBuyExecution,
   previewSellExecution,
@@ -44,7 +46,7 @@ import type {
 const DEFAULT_STRATEGY_ID = 'polybot-ported';
 const DEFAULT_FEE_MODEL: BacktestFeeModel = 'polymarket-2026-03-26';
 const DEFAULT_STAKE_OVERRIDE_USD = 1;
-const DEFAULT_MAX_PRICE_SLIPPAGE_PCT = 0.02;
+const DEFAULT_MAX_PRICE_SLIPPAGE_PCT = 0.05;
 const LIVE_TIMEFRAME = '5m';
 const MAX_CONTEXT_CANDLES = 128;
 
@@ -124,6 +126,14 @@ function floorShares(value: number): number {
   }
 
   return Math.floor((value + Number.EPSILON) * 100) / 100;
+}
+
+function slippageTrimmedBuyPreview(original: LiveBuyPreview, limited: LiveBuyPreview): boolean {
+  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
+}
+
+function slippageTrimmedSellPreview(original: LiveSellPreview, limited: LiveSellPreview): boolean {
+  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
 }
 
 function cloneHistoryMap(history: LiveSessionHistoryMap): LiveSessionHistoryMap {
@@ -448,30 +458,14 @@ function withBuySlippageLimit(
     return null;
   }
 
-  const priceLimit = roundPriceToTick(anchorPrice * (1 + maxPriceSlippagePct), tickSize, 'up');
-  const fills = preview.fills.filter((fill) => fill.price <= priceLimit + 1e-9);
-  const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
-  if (!isFinitePositiveNumber(shares)) {
+  const limitedPreview = applyBuySlippageLimit(preview, maxPriceSlippagePct);
+  if (!limitedPreview || slippageTrimmedBuyPreview(preview, limitedPreview)) {
     return null;
   }
 
-  const grossCost = fills.reduce((sum, fill) => sum + fill.grossAmount, 0);
-  const totalFee = fills.reduce((sum, fill) => sum + fill.fee, 0);
-
   return {
-    priceLimit,
-    preview: {
-      requestedStake: preview.requestedStake,
-      shares,
-      avgPrice: grossCost / shares,
-      totalCost: grossCost + totalFee,
-      totalFee,
-      partialFill: preview.requestedStake - (grossCost + totalFee) > 1e-9,
-      levelsConsumed: fills.length,
-      bookVisible: preview.bookVisible,
-      quotedPrice: preview.quotedPrice,
-      fills,
-    },
+    priceLimit: roundPriceToTick(anchorPrice * (1 + maxPriceSlippagePct), tickSize, 'up'),
+    preview: limitedPreview,
   };
 }
 
@@ -485,31 +479,14 @@ function withSellSlippageLimit(
     return null;
   }
 
-  const priceLimit = roundPriceToTick(anchorPrice * (1 - maxPriceSlippagePct), tickSize, 'down');
-  const fills = preview.fills.filter((fill) => fill.price + 1e-9 >= priceLimit);
-  const shares = fills.reduce((sum, fill) => sum + fill.shares, 0);
-  if (!isFinitePositiveNumber(shares)) {
+  const limitedPreview = applySellSlippageLimit(preview, maxPriceSlippagePct);
+  if (!limitedPreview || slippageTrimmedSellPreview(preview, limitedPreview)) {
     return null;
   }
 
-  const proceeds = fills.reduce((sum, fill) => sum + fill.grossAmount, 0);
-  const totalFee = fills.reduce((sum, fill) => sum + fill.fee, 0);
-
   return {
-    priceLimit,
-    preview: {
-      requestedShares: preview.requestedShares,
-      shares,
-      remainingShares: floorShares(Math.max(0, preview.requestedShares - shares)),
-      avgPrice: proceeds / shares,
-      proceeds,
-      totalFee,
-      partialFill: shares + 1e-9 < preview.requestedShares,
-      levelsConsumed: fills.length,
-      bookVisible: preview.bookVisible,
-      quotedPrice: preview.quotedPrice,
-      fills,
-    },
+    priceLimit: roundPriceToTick(anchorPrice * (1 - maxPriceSlippagePct), tickSize, 'down'),
+    preview: limitedPreview,
   };
 }
 
