@@ -13,6 +13,7 @@ const DEFAULT_INITIAL_WAIT_MS = 1_500;
 const DEFAULT_PING_INTERVAL_MS = 10_000;
 const DEFAULT_STALE_AFTER_MS = 15_000;
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 
 type RealtimeOutcomeSide = 'up' | 'down';
 
@@ -84,12 +85,18 @@ export interface RealtimeBestBidAskInput {
 
 export interface RealtimePaperMarketSource {
   getLatestSnapshots: () => Promise<PaperMarketSnapshot[]>;
+  waitForNextUpdate?: (afterTimestamp: string, timeoutMs: number) => Promise<void>;
+  waitForNextSignal?: (afterTimestamp: string, timeoutMs: number) => Promise<PaperMarketSnapshot>;
   close: () => Promise<void>;
 }
+
+type HybridSnapshotResolution = 'realtime' | 'polling';
 
 export interface HybridPaperMarketSource {
   getCurrentSnapshots: () => Promise<PaperMarketSnapshot[]>;
   getSnapshotBySlug: (slug: string, asset: PaperMarketAsset) => Promise<PaperMarketSnapshot>;
+  waitForNextUpdate?: (afterTimestamp: string, timeoutMs: number) => Promise<void>;
+  getLastResolutionKind?: () => HybridSnapshotResolution | null;
   close: () => Promise<void>;
 }
 
@@ -100,6 +107,15 @@ export interface RealtimePaperMarketSourceOptions {
   initialWaitMs?: number;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
+  maxReconnectAttempts?: number;
+  fatalOnReconnectExhausted?: boolean;
+}
+
+export class RealtimeConnectionExhaustedError extends Error {
+  constructor(message = 'Realtime market connection exhausted reconnect attempts.') {
+    super(message);
+    this.name = 'RealtimeConnectionExhaustedError';
+  }
 }
 
 function coerceNumber(value: unknown): number | null {
@@ -335,6 +351,7 @@ export function createHybridPaperMarketSource(input: {
 }): HybridPaperMarketSource {
   const now = input.now ?? (() => new Date());
   const staleAfterMs = input.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+  let lastResolutionKind: HybridSnapshotResolution | null = null;
 
   return {
     async getCurrentSnapshots() {
@@ -343,13 +360,31 @@ export function createHybridPaperMarketSource(input: {
         hasFreshSnapshots(realtimeSnapshots, now, staleAfterMs)
         && realtimeSnapshots.every(looksLikeReliableBinarySnapshot)
       ) {
+        lastResolutionKind = 'realtime';
         return realtimeSnapshots;
       }
 
+      lastResolutionKind = 'polling';
       return sortSnapshots(await input.pollingSource.getCurrentSnapshots());
     },
     getSnapshotBySlug(slug, asset) {
       return input.pollingSource.getSnapshotBySlug(slug, asset);
+    },
+    waitForNextUpdate(afterTimestamp, timeoutMs) {
+      if (input.realtimeSource.waitForNextUpdate) {
+        return input.realtimeSource.waitForNextUpdate(afterTimestamp, timeoutMs);
+      }
+
+      if (timeoutMs <= 0) {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        setTimeout(resolve, timeoutMs);
+      });
+    },
+    getLastResolutionKind() {
+      return lastResolutionKind;
     },
     close() {
       return input.realtimeSource.close();
@@ -361,16 +396,16 @@ function maybePublishSnapshot(
   cache: RealtimeSnapshotCache,
   metadata: RealtimeAssetMetadata,
   tokenStates: Map<string, RealtimeTokenState>,
-): void {
+): PaperMarketSnapshot | null {
   const upTokenState = tokenStates.get(metadata.tokenIds.up);
   const downTokenState = tokenStates.get(metadata.tokenIds.down);
 
   if (!upTokenState || !downTokenState) {
-    return;
+    return null;
   }
 
   if (upTokenState.price === null || downTokenState.price === null) {
-    return;
+    return null;
   }
 
   ingestRealtimeBestBidAsk(cache, {
@@ -399,6 +434,8 @@ function maybePublishSnapshot(
     eventStartTime: metadata.detail.eventStartTime,
     endDate: metadata.detail.endDate,
   });
+
+  return cache.latestByAsset[metadata.detail.asset] ?? null;
 }
 
 function updateTokenState(
@@ -432,10 +469,11 @@ function handleBookPayload(
   metadataByAsset: Partial<Record<PaperMarketAsset, RealtimeAssetMetadata>>,
   tokenStates: Map<string, RealtimeTokenState>,
   cache: RealtimeSnapshotCache,
-): void {
+): PaperMarketSnapshot[] {
+  const published: PaperMarketSnapshot[] = [];
   const tokenId = typeof payload.asset_id === 'string' ? payload.asset_id : null;
   if (!tokenId) {
-    return;
+    return published;
   }
 
   const next = updateTokenState(tokenStates, tokenId, {
@@ -448,13 +486,18 @@ function handleBookPayload(
   }, metadataByTokenId);
 
   if (!next) {
-    return;
+    return published;
   }
 
   const metadata = metadataByAsset[next.asset];
   if (metadata) {
-    maybePublishSnapshot(cache, metadata, tokenStates);
+    const snapshot = maybePublishSnapshot(cache, metadata, tokenStates);
+    if (snapshot) {
+      published.push(snapshot);
+    }
   }
+
+  return published;
 }
 
 function handlePriceChangePayload(
@@ -463,7 +506,8 @@ function handlePriceChangePayload(
   metadataByAsset: Partial<Record<PaperMarketAsset, RealtimeAssetMetadata>>,
   tokenStates: Map<string, RealtimeTokenState>,
   cache: RealtimeSnapshotCache,
-): void {
+): PaperMarketSnapshot[] {
+  const published: PaperMarketSnapshot[] = [];
   const changes = Array.isArray(payload.price_changes) ? payload.price_changes : [];
   const eventTimestamp = toIsoString(typeof payload.timestamp === 'string' ? payload.timestamp : undefined);
 
@@ -490,9 +534,14 @@ function handlePriceChangePayload(
 
     const metadata = metadataByAsset[next.asset];
     if (metadata) {
-      maybePublishSnapshot(cache, metadata, tokenStates);
+      const snapshot = maybePublishSnapshot(cache, metadata, tokenStates);
+      if (snapshot) {
+        published.push(snapshot);
+      }
     }
   }
+
+  return published;
 }
 
 export function createRealtimePaperMarketSource(
@@ -504,6 +553,8 @@ export function createRealtimePaperMarketSource(
   const initialWaitMs = options.initialWaitMs ?? DEFAULT_INITIAL_WAIT_MS;
   const pingIntervalMs = options.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
   const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+  const maxReconnectAttempts = Math.max(0, Math.round(options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS));
+  const fatalOnReconnectExhausted = options.fatalOnReconnectExhausted ?? false;
   const cache = createRealtimeSnapshotCache();
   const tokenStates = new Map<string, RealtimeTokenState>();
   const metadataByTokenId = new Map<string, { asset: PaperMarketAsset; side: RealtimeOutcomeSide }>();
@@ -515,16 +566,143 @@ export function createRealtimePaperMarketSource(
   let currentSignature = '';
   let refreshPromise: Promise<void> | null = null;
   let nextRefreshAt = 0;
-  let readyWaiters: Array<() => void> = [];
+  let reconnectAttempts = 0;
+  let fatalError: Error | null = null;
+  let readyWaiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout | null;
+  }> = [];
+  let updateWaiters: Array<{
+    afterMs: number;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout | null;
+  }> = [];
+  let signalWaiters: Array<{
+    afterMs: number;
+    resolve: (snapshot: PaperMarketSnapshot) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout | null;
+  }> = [];
+
+  function latestSnapshotTimestampMs(): number {
+    const timestamps = (['BTC', 'ETH'] as const)
+      .map((asset) => cache.latestByAsset[asset]?.fetchedAt)
+      .map((timestamp) => timestamp ? Date.parse(timestamp) : Number.NaN)
+      .filter((timestamp) => Number.isFinite(timestamp));
+
+    if (timestamps.length !== 2) {
+      return Number.NaN;
+    }
+
+    return Math.max(...timestamps);
+  }
+
+  function throwIfFatal(): void {
+    if (fatalError) {
+      throw fatalError;
+    }
+  }
+
+  function rejectAllWaiters(error: Error): void {
+    const pendingReadyWaiters = readyWaiters;
+    readyWaiters = [];
+    for (const waiter of pendingReadyWaiters) {
+      if (waiter.timer) {
+        clearTimeout(waiter.timer);
+      }
+      waiter.reject(error);
+    }
+
+    const pendingUpdateWaiters = updateWaiters;
+    updateWaiters = [];
+    for (const waiter of pendingUpdateWaiters) {
+      if (waiter.timer) {
+        clearTimeout(waiter.timer);
+      }
+      waiter.reject(error);
+    }
+
+    const pendingSignalWaiters = signalWaiters;
+    signalWaiters = [];
+    for (const waiter of pendingSignalWaiters) {
+      if (waiter.timer) {
+        clearTimeout(waiter.timer);
+      }
+      waiter.reject(error);
+    }
+  }
+
+  function markFatalError(error: Error): void {
+    if (fatalError) {
+      return;
+    }
+
+    fatalError = error;
+    clearSocketResources();
+    rejectAllWaiters(error);
+  }
 
   function resolveReadyWaiters(): void {
     if (cache.latestByAsset.BTC && cache.latestByAsset.ETH) {
       const pending = readyWaiters;
       readyWaiters = [];
-      for (const resolve of pending) {
-        resolve();
+      for (const waiter of pending) {
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+        }
+        waiter.resolve();
       }
     }
+  }
+
+  function resolveUpdateWaiters(): void {
+    if (!cache.latestByAsset.BTC || !cache.latestByAsset.ETH) {
+      return;
+    }
+
+    const latestMs = latestSnapshotTimestampMs();
+    if (!Number.isFinite(latestMs)) {
+      return;
+    }
+
+    const remaining: typeof updateWaiters = [];
+    for (const waiter of updateWaiters) {
+      if (latestMs > waiter.afterMs) {
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+        }
+        waiter.resolve();
+        continue;
+      }
+
+      remaining.push(waiter);
+    }
+
+    updateWaiters = remaining;
+  }
+
+  function resolveSignalWaiters(snapshot: PaperMarketSnapshot): void {
+    const snapshotMs = Date.parse(snapshot.fetchedAt);
+    if (!Number.isFinite(snapshotMs)) {
+      return;
+    }
+
+    const remaining: typeof signalWaiters = [];
+    for (const waiter of signalWaiters) {
+      if (snapshotMs > waiter.afterMs) {
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+        }
+        waiter.resolve(snapshot);
+        continue;
+      }
+
+      remaining.push(waiter);
+    }
+
+    signalWaiters = remaining;
   }
 
   function clearSocketResources(): void {
@@ -543,10 +721,20 @@ export function createRealtimePaperMarketSource(
   }
 
   function scheduleReconnect(): void {
-    if (closed || reconnectTimer) {
+    if (closed || reconnectTimer || fatalError) {
       return;
     }
 
+    if (reconnectAttempts >= maxReconnectAttempts) {
+      if (fatalOnReconnectExhausted) {
+        markFatalError(new RealtimeConnectionExhaustedError(
+          `Realtime market connection exhausted ${maxReconnectAttempts} reconnect attempts.`,
+        ));
+      }
+      return;
+    }
+
+    reconnectAttempts += 1;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       void refreshRealtimeSubscription(true);
@@ -562,6 +750,7 @@ export function createRealtimePaperMarketSource(
     }
 
     const messages = Array.isArray(parsed) ? parsed : [parsed];
+    const publishedSnapshots: PaperMarketSnapshot[] = [];
 
     for (const entry of messages) {
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
@@ -571,13 +760,17 @@ export function createRealtimePaperMarketSource(
       const payload = entry as Record<string, unknown>;
       const eventType = typeof payload.event_type === 'string' ? payload.event_type : null;
       if (eventType === 'book') {
-        handleBookPayload(payload, metadataByTokenId, metadataByAsset, tokenStates, cache);
+        publishedSnapshots.push(...handleBookPayload(payload, metadataByTokenId, metadataByAsset, tokenStates, cache));
       } else if (eventType === 'price_change') {
-        handlePriceChangePayload(payload, metadataByTokenId, metadataByAsset, tokenStates, cache);
+        publishedSnapshots.push(...handlePriceChangePayload(payload, metadataByTokenId, metadataByAsset, tokenStates, cache));
       }
     }
 
     resolveReadyWaiters();
+    resolveUpdateWaiters();
+    for (const snapshot of publishedSnapshots) {
+      resolveSignalWaiters(snapshot);
+    }
   }
 
   function openSocket(detailsByAsset: Partial<Record<PaperMarketAsset, RealtimeAssetMetadata>>): void {
@@ -590,12 +783,14 @@ export function createRealtimePaperMarketSource(
     }
 
     if (!nextSocket) {
+      scheduleReconnect();
       return;
     }
 
     socket = nextSocket;
 
     nextSocket.addEventListener('open', () => {
+      reconnectAttempts = 0;
       const tokenIds = Object.values(detailsByAsset)
         .flatMap((item) => item ? [item.tokenIds.up, item.tokenIds.down] : []);
 
@@ -624,6 +819,7 @@ export function createRealtimePaperMarketSource(
   }
 
   async function refreshRealtimeSubscription(force = false): Promise<void> {
+    throwIfFatal();
     if (closed) {
       return;
     }
@@ -681,18 +877,19 @@ export function createRealtimePaperMarketSource(
   }
 
   async function waitForReadySnapshots(): Promise<void> {
+    throwIfFatal();
     if (cache.latestByAsset.BTC && cache.latestByAsset.ETH) {
       return;
     }
 
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) {
           return;
         }
         settled = true;
-        readyWaiters = readyWaiters.filter((item) => item !== onReady);
+        readyWaiters = readyWaiters.filter((item) => item.resolve !== onReady);
         resolve();
       }, initialWaitMs);
 
@@ -705,7 +902,18 @@ export function createRealtimePaperMarketSource(
         resolve();
       };
 
-      readyWaiters.push(onReady);
+      readyWaiters.push({
+        resolve: onReady,
+        reject: (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        },
+        timer,
+      });
     });
   }
 
@@ -714,12 +922,118 @@ export function createRealtimePaperMarketSource(
       await refreshRealtimeSubscription();
       await waitForReadySnapshots();
       await refreshRealtimeSubscription();
+      throwIfFatal();
 
       return sortSnapshots(
         (['BTC', 'ETH'] as const)
           .map((asset) => cache.latestByAsset[asset])
           .filter((snapshot): snapshot is PaperMarketSnapshot => snapshot !== undefined),
       );
+    },
+    async waitForNextUpdate(afterTimestamp, timeoutMs) {
+      await refreshRealtimeSubscription();
+      throwIfFatal();
+
+      const afterMs = Date.parse(afterTimestamp);
+      const latestMs = latestSnapshotTimestampMs();
+      if (Number.isFinite(latestMs) && (!Number.isFinite(afterMs) || latestMs > afterMs)) {
+        return;
+      }
+
+      if (timeoutMs <= 0) {
+        return;
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const waiter = {
+          afterMs: Number.isFinite(afterMs) ? afterMs : Number.NEGATIVE_INFINITY,
+          resolve: () => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            updateWaiters = updateWaiters.filter((item) => item !== waiter);
+            resolve();
+          },
+          reject: (error: Error) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            updateWaiters = updateWaiters.filter((item) => item !== waiter);
+            reject(error);
+          },
+          timer: null as NodeJS.Timeout | null,
+        };
+
+        waiter.timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          updateWaiters = updateWaiters.filter((item) => item !== waiter);
+          resolve();
+        }, timeoutMs);
+
+        updateWaiters.push(waiter);
+        resolveUpdateWaiters();
+      });
+    },
+    async waitForNextSignal(afterTimestamp, timeoutMs) {
+      await refreshRealtimeSubscription();
+      throwIfFatal();
+
+      const afterMs = Date.parse(afterTimestamp);
+      const latestSnapshots = sortSnapshots(
+        (['BTC', 'ETH'] as const)
+          .map((asset) => cache.latestByAsset[asset])
+          .filter((snapshot): snapshot is PaperMarketSnapshot => snapshot !== undefined),
+      );
+      const immediate = latestSnapshots.find((snapshot) => {
+        const snapshotMs = Date.parse(snapshot.fetchedAt);
+        return Number.isFinite(snapshotMs) && (!Number.isFinite(afterMs) || snapshotMs > afterMs);
+      });
+      if (immediate) {
+        return immediate;
+      }
+
+      return new Promise<PaperMarketSnapshot>((resolve, reject) => {
+        let settled = false;
+        const waiter = {
+          afterMs: Number.isFinite(afterMs) ? afterMs : Number.NEGATIVE_INFINITY,
+          resolve: (snapshot: PaperMarketSnapshot) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            signalWaiters = signalWaiters.filter((item) => item !== waiter);
+            resolve(snapshot);
+          },
+          reject: (error: Error) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            signalWaiters = signalWaiters.filter((item) => item !== waiter);
+            reject(error);
+          },
+          timer: null as NodeJS.Timeout | null,
+        };
+
+        if (timeoutMs > 0) {
+          waiter.timer = setTimeout(() => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            signalWaiters = signalWaiters.filter((item) => item !== waiter);
+            reject(new Error(`Timed out waiting for realtime market signal after ${timeoutMs}ms.`));
+          }, timeoutMs);
+        }
+
+        signalWaiters.push(waiter);
+      });
     },
     async close() {
       closed = true;
@@ -728,7 +1042,7 @@ export function createRealtimePaperMarketSource(
         reconnectTimer = null;
       }
       clearSocketResources();
-      readyWaiters = [];
+      rejectAllWaiters(new Error('Realtime market source closed.'));
     },
   };
 }

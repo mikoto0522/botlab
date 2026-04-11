@@ -1510,3 +1510,92 @@ test('realtime paper market source degrades cleanly when websocket support is un
     webSocketGlobal.WebSocket = originalWebSocket;
   }
 });
+
+test('realtime paper market source throws after five failed reconnect attempts in fatal mode', async () => {
+  let socketAttempts = 0;
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            slug: 'btc-updown-5m-1774781400',
+            active: true,
+            closed: false,
+          },
+          {
+            slug: 'eth-updown-5m-1774781400',
+            active: true,
+            closed: false,
+          },
+        ]),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          volume: 25000,
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/eth-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'eth-updown-5m-1774781400',
+          question: 'Ethereum Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['eth-up-token', 'eth-down-token'],
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          volume: 26000,
+        }),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+
+  const realtimeSource = createRealtimePaperMarketSource({
+    fetchImpl: fakeFetch,
+    websocketFactory: () => {
+      socketAttempts += 1;
+      return null;
+    },
+    now: () => new Date('2026-03-29T10:53:27.000Z'),
+    initialWaitMs: 100,
+    reconnectDelayMs: 1,
+    maxReconnectAttempts: 5,
+    fatalOnReconnectExhausted: true,
+  });
+
+  try {
+    await assert.rejects(async () => realtimeSource.getLatestSnapshots(), /exhausted 5 reconnect attempts/i);
+    assert.equal(socketAttempts, 6);
+  } finally {
+    await realtimeSource.close();
+  }
+});
