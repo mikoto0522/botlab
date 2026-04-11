@@ -116,11 +116,15 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
 });
 
 test('realtime connection logger prints only key connection lifecycle events', async () => {
-  const { createRealtimeConnectionLogger } = await import('../commands/realtime-logging.js');
+  const { createRealtimeConnectionReporter } = await import('../commands/realtime-logging.js');
   const lines: string[] = [];
-  const logConnection = createRealtimeConnectionLogger('live', {
+  const events: Array<Record<string, unknown>> = [];
+  const logConnection = createRealtimeConnectionReporter('live', {
     write: (line) => {
       lines.push(line);
+    },
+    appendEvent: (event) => {
+      events.push(event);
     },
   });
 
@@ -150,5 +154,31 @@ test('realtime connection logger prints only key connection lifecycle events', a
     '[2026-04-11T15:30:05.000Z] live realtime reconnecting (attempt 1/5 in 5s)',
     '[2026-04-11T15:30:10.000Z] live realtime reconnected',
     '[2026-04-11T15:30:35.000Z] live realtime stopped (Realtime market connection exhausted 5 reconnect attempts.)',
+  ]);
+  assert.deepEqual(events, [
+    {
+      type: 'live-realtime-connection',
+      timestamp: '2026-04-11T15:30:00.000Z',
+      status: 'connected',
+    },
+    {
+      type: 'live-realtime-connection',
+      timestamp: '2026-04-11T15:30:05.000Z',
+      status: 'reconnecting',
+      attempt: 1,
+      maxAttempts: 5,
+      delayMs: 5000,
+    },
+    {
+      type: 'live-realtime-connection',
+      timestamp: '2026-04-11T15:30:10.000Z',
+      status: 'reconnected',
+    },
+    {
+      type: 'live-realtime-connection',
+      timestamp: '2026-04-11T15:30:35.000Z',
+      status: 'fatal',
+      message: 'Realtime market connection exhausted 5 reconnect attempts.',
+    },
   ]);
 });

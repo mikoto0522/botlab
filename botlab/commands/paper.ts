@@ -11,9 +11,10 @@ import {
   createRealtimePaperMarketSource,
 } from '../paper/realtime-market-source.js';
 import { runPaperLoop, type PaperCycleReport } from '../paper/loop.js';
+import { appendPaperSessionEvent } from '../paper/session-store.js';
 import { loadPaperSessionState } from '../paper/session-store.js';
 import { resolvePaperSessionPaths } from '../paper/types.js';
-import { createQuietCycleLogger, createRealtimeConnectionLogger } from './realtime-logging.js';
+import { createQuietCycleLogger, createRealtimeConnectionReporter } from './realtime-logging.js';
 import { formatBacktestNumber, resolveProjectRelativePath } from './backtest-common.js';
 import { getStrategyParamOverrides } from '../core/strategy-params.js';
 
@@ -50,7 +51,12 @@ type LoopMarketSourceWithClose = {
   close: () => Promise<void>;
 };
 
-function createLoopMarketSource(config: BotlabConfig, fixturePath?: string): LoopMarketSourceWithClose {
+function createLoopMarketSource(
+  config: BotlabConfig,
+  sessionName: string,
+  cwd: string,
+  fixturePath?: string,
+): LoopMarketSourceWithClose {
   if (fixturePath) {
     const resolvedFixturePath = resolveProjectRelativePath(config, fixturePath);
     const loadFixture = createFixturePaperMarketSource(resolvedFixturePath);
@@ -74,7 +80,11 @@ function createLoopMarketSource(config: BotlabConfig, fixturePath?: string): Loo
     reconnectDelayMs: 5_000,
     maxReconnectAttempts: 5,
     fatalOnReconnectExhausted: true,
-    onConnectionEvent: createRealtimeConnectionLogger('paper'),
+    onConnectionEvent: createRealtimeConnectionReporter('paper', {
+      appendEvent: (event) => {
+        appendPaperSessionEvent(sessionName, event, cwd);
+      },
+    }),
   });
 
   return {
@@ -100,7 +110,7 @@ export async function paperCommand(
 ): Promise<string> {
   const repoRoot = path.dirname(config.paths.rootDir);
   const intervalMs = Math.max(0, Math.round(options.intervalSeconds * 1000));
-  const marketSource = createLoopMarketSource(config, options.fixturePath);
+  const marketSource = createLoopMarketSource(config, options.sessionName, repoRoot, options.fixturePath);
   const logPaperCycle = createQuietCycleLogger('paper') as (report: PaperCycleReport) => void;
 
   try {

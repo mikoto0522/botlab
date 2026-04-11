@@ -38,6 +38,21 @@ interface LoggerOptions {
   write?: (line: string) => void;
 }
 
+interface PersistedRealtimeConnectionEvent {
+  type: string;
+  timestamp: string;
+  status: RealtimeConnectionEvent['type'];
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  message?: string;
+  [key: string]: unknown;
+}
+
+interface ConnectionReporterOptions extends LoggerOptions {
+  appendEvent?: (event: PersistedRealtimeConnectionEvent) => void;
+}
+
 interface CycleLoggerOptions extends LoggerOptions {
   heartbeatIntervalMs?: number;
 }
@@ -86,13 +101,24 @@ export function createQuietCycleLogger(
   };
 }
 
-export function createRealtimeConnectionLogger(
+export function createRealtimeConnectionReporter(
   mode: 'paper' | 'live',
-  options: LoggerOptions = {},
+  options: ConnectionReporterOptions = {},
 ): (event: RealtimeConnectionEvent) => void {
   const write = options.write ?? ((line: string) => console.log(line));
 
   return (event: RealtimeConnectionEvent) => {
+    const persistedEvent: PersistedRealtimeConnectionEvent = {
+      type: `${mode}-realtime-connection`,
+      timestamp: event.timestamp,
+      status: event.type,
+      ...(event.attempt === undefined ? {} : { attempt: event.attempt }),
+      ...(event.maxAttempts === undefined ? {} : { maxAttempts: event.maxAttempts }),
+      ...(event.delayMs === undefined ? {} : { delayMs: event.delayMs }),
+      ...(event.message === undefined ? {} : { message: event.message }),
+    };
+    options.appendEvent?.(persistedEvent);
+
     if (event.type === 'connected') {
       write(`[${event.timestamp}] ${mode} realtime connected`);
       return;
@@ -116,3 +142,5 @@ export function createRealtimeConnectionLogger(
     write(`[${event.timestamp}] ${mode} realtime stopped (${event.message ?? 'unknown realtime failure'})`);
   };
 }
+
+export const createRealtimeConnectionLogger = createRealtimeConnectionReporter;

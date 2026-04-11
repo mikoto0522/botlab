@@ -12,11 +12,11 @@ import {
 import {
   createRealtimePaperMarketSource,
 } from '../paper/realtime-market-source.js';
-import { createQuietCycleLogger, createRealtimeConnectionLogger } from './realtime-logging.js';
+import { createQuietCycleLogger, createRealtimeConnectionReporter } from './realtime-logging.js';
 import { formatBacktestNumber } from './backtest-common.js';
 import { createPolymarketLiveTradingClient, loadPolymarketLiveCredentialsFromEnv } from '../live/client.js';
 import { runLiveLoop, type LiveCycleReport } from '../live/loop.js';
-import { loadLiveSessionState } from '../live/session-store.js';
+import { appendLiveSessionEvent, loadLiveSessionState } from '../live/session-store.js';
 import { resolveLiveSessionPaths } from '../live/types.js';
 
 export interface LiveCommandOptions {
@@ -76,7 +76,7 @@ export type LoopMarketSourceWithClose = {
   ) => Promise<PaperMarketSnapshot>;
 };
 
-export function createLoopMarketSource(): LoopMarketSourceWithClose {
+export function createLoopMarketSource(sessionName?: string, cwd?: string): LoopMarketSourceWithClose {
   const marketDetailCache = new Map<string, Awaited<ReturnType<typeof fetchPaperMarketDetail>>>();
   const currentSnapshots = new Map<string, PaperMarketSnapshot>();
 
@@ -102,7 +102,13 @@ export function createLoopMarketSource(): LoopMarketSourceWithClose {
     reconnectDelayMs: 5_000,
     maxReconnectAttempts: 5,
     fatalOnReconnectExhausted: true,
-    onConnectionEvent: createRealtimeConnectionLogger('live'),
+    onConnectionEvent: createRealtimeConnectionReporter('live', {
+      appendEvent: (event) => {
+        if (sessionName && cwd) {
+          appendLiveSessionEvent(sessionName, event, cwd);
+        }
+      },
+    }),
   });
 
   const getCurrentSnapshots = async () => {
@@ -165,7 +171,7 @@ export async function liveCommand(
   const repoRoot = path.dirname(config.paths.rootDir);
   const intervalMs = Math.max(0, Math.round(options.intervalSeconds * 1000));
   const stakeUsd = Math.max(0, options.stakeUsd ?? 1);
-  const marketSource = createLoopMarketSource();
+  const marketSource = createLoopMarketSource(options.sessionName, repoRoot);
   const logLiveCycle = createQuietCycleLogger('live') as (report: LiveCycleReport) => void;
   const credentials = loadPolymarketLiveCredentialsFromEnv();
   const tradingClient = await createPolymarketLiveTradingClient(credentials);
