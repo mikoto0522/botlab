@@ -23,6 +23,10 @@ export interface BuyExecutionPreview {
   fills: ExecutionFillLevel[];
 }
 
+export interface BuyExecutionPreviewOptions {
+  allowQuotedFallback?: boolean;
+}
+
 export interface SellExecutionPreview {
   requestedShares: number;
   shares: number;
@@ -41,6 +45,14 @@ interface LiquidityLevels {
   levels: PaperOrderBookLevel[];
   depthVisible: boolean;
   quotedPrice: number | null;
+}
+
+function createQuotedFallbackLevel(quotedPrice: number | null): PaperOrderBookLevel[] {
+  if (!isFinitePositiveNumber(quotedPrice)) {
+    return [];
+  }
+
+  return [{ price: quotedPrice, size: Number.MAX_SAFE_INTEGER }];
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -97,7 +109,11 @@ export function hasOnlyPlaceholderOutcomeAsks(snapshot: PaperMarketSnapshot): bo
   );
 }
 
-function getEntryLiquidityLevels(snapshot: PaperMarketSnapshot, side: OutcomeSide): LiquidityLevels {
+function getEntryLiquidityLevels(
+  snapshot: PaperMarketSnapshot,
+  side: OutcomeSide,
+  options: BuyExecutionPreviewOptions,
+): LiquidityLevels {
   if (hasOnlyPlaceholderOutcomeAsks(snapshot)) {
     return {
       levels: [],
@@ -117,7 +133,9 @@ function getEntryLiquidityLevels(snapshot: PaperMarketSnapshot, side: OutcomeSid
 
   const fallbackPrice = getEntryPrice(snapshot, side);
   return {
-    levels: [],
+    levels: options.allowQuotedFallback
+      ? createQuotedFallbackLevel(isFinitePositiveNumber(fallbackPrice) ? fallbackPrice : null)
+      : [],
     depthVisible: false,
     quotedPrice: isFinitePositiveNumber(fallbackPrice) ? fallbackPrice : null,
   };
@@ -154,8 +172,9 @@ export function previewBuyExecution(
   side: OutcomeSide,
   requestedStake: number,
   feeModel: BacktestFeeModel,
+  options: BuyExecutionPreviewOptions = {},
 ): BuyExecutionPreview | null {
-  const { levels, depthVisible, quotedPrice } = getEntryLiquidityLevels(snapshot, side);
+  const { levels, depthVisible, quotedPrice } = getEntryLiquidityLevels(snapshot, side, options);
   let remainingBudget = requestedStake;
   let totalShares = 0;
   let grossCost = 0;

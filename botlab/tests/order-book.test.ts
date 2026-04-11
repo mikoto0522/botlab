@@ -39,7 +39,7 @@ function createSnapshot(overrides: Partial<PaperMarketSnapshot> = {}): PaperMark
   };
 }
 
-test('shared order-book preview refuses entry when only a fallback ask exists without visible asks', () => {
+test('shared order-book preview uses a quoted fallback ask when visible asks are missing', () => {
   const snapshot = createSnapshot({
     upOrderBook: {
       bids: [{ price: 0.52, size: 50 }],
@@ -47,10 +47,16 @@ test('shared order-book preview refuses entry when only a fallback ask exists wi
     },
   });
 
-  const preview = previewBuyExecution(snapshot, 'up', 1, 'polymarket-2026-03-26');
+  const preview = previewBuyExecution(snapshot, 'up', 1, 'polymarket-2026-03-26', {
+    allowQuotedFallback: true,
+  });
 
-  assert.equal(preview, null);
+  assert.ok(preview);
+  assert.equal(preview.bookVisible, false);
   assert.equal(readBestOutcomeAsk(snapshot, 'up'), 0.53);
+  assert.equal(preview.quotedPrice, 0.53);
+  assert.equal(preview.fills.length, 1);
+  assert.equal(preview.fills[0]?.price, 0.53);
 });
 
 test('shared order-book preview spots placeholder dual 0.99 asks', () => {

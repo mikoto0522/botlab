@@ -220,7 +220,9 @@ export function openPaperPosition(
     return null;
   }
 
-  const execution = previewBuyExecution(snapshot, side, requestedStake, feeModel);
+  const execution = previewBuyExecution(snapshot, side, requestedStake, feeModel, {
+    allowQuotedFallback: true,
+  });
   if (!execution || !isFinitePositiveNumber(execution.totalCost) || execution.totalCost > state.cash + 1e-9) {
     return null;
   }
