@@ -245,6 +245,17 @@ function hasFreshSnapshots(
   });
 }
 
+function hasVisibleBookDepth(snapshot: PaperMarketSnapshot): boolean {
+  return Boolean(
+    snapshot.upOrderBook
+    && snapshot.downOrderBook
+    && snapshot.upOrderBook.bids.length > 0
+    && snapshot.upOrderBook.asks.length > 0
+    && snapshot.downOrderBook.bids.length > 0
+    && snapshot.downOrderBook.asks.length > 0,
+  );
+}
+
 function looksLikeReliableBinarySnapshot(snapshot: PaperMarketSnapshot): boolean {
   if (
     snapshot.upPrice === null
@@ -269,7 +280,7 @@ function looksLikeReliableBinarySnapshot(snapshot: PaperMarketSnapshot): boolean
     return false;
   }
 
-  if (!snapshot.upOrderBook || !snapshot.downOrderBook) {
+  if (!hasVisibleBookDepth(snapshot)) {
     return false;
   }
 

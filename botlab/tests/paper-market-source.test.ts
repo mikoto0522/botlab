@@ -1120,6 +1120,143 @@ test('hybrid paper market source falls back to polling when realtime prices are 
   assert.equal(snapshots[1]?.downPrice, 0.51);
 });
 
+test('hybrid paper market source falls back to polling when realtime order books are present but empty', async () => {
+  let pollingCalls = 0;
+  const hybrid = createHybridPaperMarketSource({
+    now: () => new Date('2026-03-29T10:53:30.000Z'),
+    staleAfterMs: 5_000,
+    pollingSource: {
+      getCurrentSnapshots: async () => {
+        pollingCalls += 1;
+        return [
+          {
+            asset: 'BTC',
+            slug: 'btc-updown-5m-1774781400',
+            question: 'Bitcoin Up or Down',
+            active: true,
+            closed: false,
+            acceptingOrders: true,
+            eventStartTime: '2026-03-29T10:50:00.000Z',
+            endDate: '2026-03-29T10:55:00.000Z',
+            bucketStartTime: '2026-03-29T10:50:00.000Z',
+            bucketStartEpoch: 1774781400,
+            upPrice: 0.52,
+            downPrice: 0.48,
+            upAsk: 0.53,
+            downAsk: 0.49,
+            upOrderBook: {
+              bids: [{ price: 0.51, size: 10 }],
+              asks: [{ price: 0.53, size: 10 }],
+            },
+            downOrderBook: {
+              bids: [{ price: 0.47, size: 10 }],
+              asks: [{ price: 0.49, size: 10 }],
+            },
+            downAskDerivedFromBestBid: false,
+            volume: 25000,
+            fetchedAt: '2026-03-29T10:53:30.000Z',
+          },
+          {
+            asset: 'ETH',
+            slug: 'eth-updown-5m-1774781400',
+            question: 'Ethereum Up or Down',
+            active: true,
+            closed: false,
+            acceptingOrders: true,
+            eventStartTime: '2026-03-29T10:50:00.000Z',
+            endDate: '2026-03-29T10:55:00.000Z',
+            bucketStartTime: '2026-03-29T10:50:00.000Z',
+            bucketStartEpoch: 1774781400,
+            upPrice: 0.49,
+            downPrice: 0.51,
+            upAsk: 0.5,
+            downAsk: 0.52,
+            upOrderBook: {
+              bids: [{ price: 0.49, size: 10 }],
+              asks: [{ price: 0.5, size: 10 }],
+            },
+            downOrderBook: {
+              bids: [{ price: 0.48, size: 10 }],
+              asks: [{ price: 0.52, size: 10 }],
+            },
+            downAskDerivedFromBestBid: false,
+            volume: 25000,
+            fetchedAt: '2026-03-29T10:53:30.000Z',
+          },
+        ];
+      },
+      getSnapshotBySlug: async () => {
+        throw new Error('not needed');
+      },
+    },
+    realtimeSource: {
+      getLatestSnapshots: async () => ([
+        {
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          bucketStartTime: '2026-03-29T10:50:00.000Z',
+          bucketStartEpoch: 1774781400,
+          upPrice: 0.52,
+          downPrice: 0.48,
+          upAsk: null,
+          downAsk: null,
+          upOrderBook: {
+            bids: [],
+            asks: [],
+          },
+          downOrderBook: {
+            bids: [],
+            asks: [],
+          },
+          downAskDerivedFromBestBid: false,
+          volume: 25000,
+          fetchedAt: '2026-03-29T10:53:29.000Z',
+        },
+        {
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1774781400',
+          question: 'Ethereum Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          bucketStartTime: '2026-03-29T10:50:00.000Z',
+          bucketStartEpoch: 1774781400,
+          upPrice: 0.49,
+          downPrice: 0.51,
+          upAsk: null,
+          downAsk: null,
+          upOrderBook: {
+            bids: [],
+            asks: [],
+          },
+          downOrderBook: {
+            bids: [],
+            asks: [],
+          },
+          downAskDerivedFromBestBid: false,
+          volume: 25000,
+          fetchedAt: '2026-03-29T10:53:29.000Z',
+        },
+      ]),
+      close: async () => {},
+    },
+  });
+
+  const snapshots = await hybrid.getCurrentSnapshots();
+
+  assert.equal(pollingCalls, 1);
+  assert.equal(snapshots[0]?.upAsk, 0.53);
+  assert.equal(snapshots[1]?.downAsk, 0.52);
+});
+
 test('realtime paper market source normalizes websocket updates into live snapshots', async () => {
   class FakeWebSocket {
     public static readonly OPEN = 1;
