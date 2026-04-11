@@ -12,6 +12,7 @@ import {
 import {
   createRealtimePaperMarketSource,
 } from '../paper/realtime-market-source.js';
+import { createQuietCycleLogger, createRealtimeConnectionLogger } from './realtime-logging.js';
 import { formatBacktestNumber } from './backtest-common.js';
 import { createPolymarketLiveTradingClient, loadPolymarketLiveCredentialsFromEnv } from '../live/client.js';
 import { runLiveLoop, type LiveCycleReport } from '../live/loop.js';
@@ -39,33 +40,6 @@ export function assertRealtimeCompatibleLiveStrategy(strategyId: string): void {
   throw new Error(
     'Realtime live mode only supports btc-eth-5m, btc-eth-5m-aggressive, and polybot-ported-v4-single-asset.'
     + ` Received ${strategyId}.`,
-  );
-}
-
-function formatDecisionSummary(report: {
-  asset: string;
-  action: string;
-  side?: string;
-  marketSlug?: string;
-  upPrice: number | null;
-  downPrice: number | null;
-}): string {
-  const prices = `price up=${report.upPrice ?? 'n/a'} down=${report.downPrice ?? 'n/a'}`;
-  const marketSlug = report.marketSlug ? ` ${report.marketSlug}` : '';
-  const side = report.side === 'flat' ? '' : ` ${report.side}`;
-
-  return `${report.asset}${marketSlug} ${report.action}${side} (${prices})`;
-}
-
-function logLiveCycle(report: LiveCycleReport): void {
-  if (report.type === 'error') {
-    console.log(`[${report.timestamp}] cycle ${report.cycleCount}: skipped (${report.errorMessage})`);
-    return;
-  }
-
-  const decisions = (report.decisions ?? []).map(formatDecisionSummary).join(' | ');
-  console.log(
-    `[${report.timestamp}] cycle ${report.cycleCount}: ${decisions || 'no decisions'} | opened=${report.openedCount} closed=${report.closedCount} settled=${report.settledCount} | cash=${formatBacktestNumber(report.cash)} equity=${formatBacktestNumber(report.equity)}`,
   );
 }
 
@@ -128,6 +102,7 @@ export function createLoopMarketSource(): LoopMarketSourceWithClose {
     reconnectDelayMs: 5_000,
     maxReconnectAttempts: 5,
     fatalOnReconnectExhausted: true,
+    onConnectionEvent: createRealtimeConnectionLogger('live'),
   });
 
   const getCurrentSnapshots = async () => {
@@ -191,6 +166,7 @@ export async function liveCommand(
   const intervalMs = Math.max(0, Math.round(options.intervalSeconds * 1000));
   const stakeUsd = Math.max(0, options.stakeUsd ?? 1);
   const marketSource = createLoopMarketSource();
+  const logLiveCycle = createQuietCycleLogger('live') as (report: LiveCycleReport) => void;
   const credentials = loadPolymarketLiveCredentialsFromEnv();
   const tradingClient = await createPolymarketLiveTradingClient(credentials);
 

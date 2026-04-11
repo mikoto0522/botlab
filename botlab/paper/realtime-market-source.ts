@@ -104,12 +104,22 @@ export interface RealtimePaperMarketSourceOptions {
   fetchImpl?: typeof fetch;
   websocketFactory?: RealtimeSocketFactory;
   loadWebSocketFactory?: () => Promise<RealtimeSocketFactory | null>;
+  onConnectionEvent?: (event: RealtimeConnectionEvent) => void;
   now?: () => Date;
   initialWaitMs?: number;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   maxReconnectAttempts?: number;
   fatalOnReconnectExhausted?: boolean;
+}
+
+export interface RealtimeConnectionEvent {
+  type: 'connected' | 'reconnecting' | 'reconnected' | 'fatal';
+  timestamp: string;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  message?: string;
 }
 
 export class RealtimeConnectionExhaustedError extends Error {
@@ -583,6 +593,8 @@ export function createRealtimePaperMarketSource(
   let reconnectAttempts = 0;
   let fatalError: Error | null = null;
   let resolvedWebSocketFactoryPromise: Promise<RealtimeSocketFactory | null> | null = null;
+  let hasConnectedOnce = false;
+  let pendingReconnectAttempt: number | null = null;
   let readyWaiters: Array<{
     resolve: () => void;
     reject: (error: Error) => void;
@@ -655,6 +667,11 @@ export function createRealtimePaperMarketSource(
     }
 
     fatalError = error;
+    options.onConnectionEvent?.({
+      type: 'fatal',
+      timestamp: now().toISOString(),
+      message: error.message,
+    });
     clearSocketResources();
     rejectAllWaiters(error);
   }
@@ -750,6 +767,14 @@ export function createRealtimePaperMarketSource(
     }
 
     reconnectAttempts += 1;
+    pendingReconnectAttempt = reconnectAttempts;
+    options.onConnectionEvent?.({
+      type: 'reconnecting',
+      timestamp: now().toISOString(),
+      attempt: reconnectAttempts,
+      maxAttempts: maxReconnectAttempts,
+      delayMs: reconnectDelayMs,
+    });
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       void refreshRealtimeSubscription(true);
@@ -822,7 +847,14 @@ export function createRealtimePaperMarketSource(
     socket = nextSocket;
 
     nextSocket.addEventListener('open', () => {
+      const reconnected = hasConnectedOnce || pendingReconnectAttempt !== null;
       reconnectAttempts = 0;
+      pendingReconnectAttempt = null;
+      hasConnectedOnce = true;
+      options.onConnectionEvent?.({
+        type: reconnected ? 'reconnected' : 'connected',
+        timestamp: now().toISOString(),
+      });
       const tokenIds = Object.values(detailsByAsset)
         .flatMap((item) => item ? [item.tokenIds.up, item.tokenIds.down] : []);
 

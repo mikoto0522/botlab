@@ -13,6 +13,7 @@ import {
 import { runPaperLoop, type PaperCycleReport } from '../paper/loop.js';
 import { loadPaperSessionState } from '../paper/session-store.js';
 import { resolvePaperSessionPaths } from '../paper/types.js';
+import { createQuietCycleLogger, createRealtimeConnectionLogger } from './realtime-logging.js';
 import { formatBacktestNumber, resolveProjectRelativePath } from './backtest-common.js';
 import { getStrategyParamOverrides } from '../core/strategy-params.js';
 
@@ -21,33 +22,6 @@ export interface PaperCommandOptions {
   intervalSeconds: number;
   maxCycles?: number;
   fixturePath?: string;
-}
-
-function formatDecisionSummary(report: {
-  asset: string;
-  action: string;
-  side?: string;
-  marketSlug?: string;
-  upPrice: number | null;
-  downPrice: number | null;
-}): string {
-  const prices = `price up=${report.upPrice ?? 'n/a'} down=${report.downPrice ?? 'n/a'}`;
-  const marketSlug = report.marketSlug ? ` ${report.marketSlug}` : '';
-  const side = report.side === 'flat' ? '' : ` ${report.side}`;
-
-  return `${report.asset}${marketSlug} ${report.action}${side} (${prices})`;
-}
-
-function logPaperCycle(report: PaperCycleReport): void {
-  if (report.type === 'error') {
-    console.log(`[${report.timestamp}] cycle ${report.cycleCount}: skipped (${report.errorMessage})`);
-    return;
-  }
-
-  const decisions = (report.decisions ?? []).map(formatDecisionSummary).join(' | ');
-  console.log(
-    `[${report.timestamp}] cycle ${report.cycleCount}: ${decisions || 'no decisions'} | opened=${report.openedCount} closed=${report.closedCount} settled=${report.settledCount} | cash=${formatBacktestNumber(report.cash)} equity=${formatBacktestNumber(report.equity)}`,
-  );
 }
 
 function buildRefFromSlug(asset: PaperMarketAsset, slug: string): PaperMarketRef {
@@ -100,6 +74,7 @@ function createLoopMarketSource(config: BotlabConfig, fixturePath?: string): Loo
     reconnectDelayMs: 5_000,
     maxReconnectAttempts: 5,
     fatalOnReconnectExhausted: true,
+    onConnectionEvent: createRealtimeConnectionLogger('paper'),
   });
 
   return {
@@ -126,6 +101,7 @@ export async function paperCommand(
   const repoRoot = path.dirname(config.paths.rootDir);
   const intervalMs = Math.max(0, Math.round(options.intervalSeconds * 1000));
   const marketSource = createLoopMarketSource(config, options.fixturePath);
+  const logPaperCycle = createQuietCycleLogger('paper') as (report: PaperCycleReport) => void;
 
   try {
     const result = await runPaperLoop({
