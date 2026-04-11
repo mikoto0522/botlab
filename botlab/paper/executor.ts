@@ -1,13 +1,12 @@
 import { calculateFee, type BacktestFeeModel } from '../backtest/fees.js';
 import type { BotlabStrategyDecision } from '../core/types.js';
 import {
-  applyBuySlippageLimit,
-  applySellSlippageLimit,
+  DEFAULT_MAX_PRICE_SLIPPAGE_PCT,
+  guardBuyExecution,
+  guardSellExecution,
   previewBuyExecution,
   previewSellExecution,
-  type BuyExecutionPreview,
   type ExecutionFillLevel,
-  type SellExecutionPreview,
 } from '../execution/order-book.js';
 import type { PaperMarketSnapshot } from './market-source.js';
 import type {
@@ -16,8 +15,6 @@ import type {
   PaperSessionPredictionSide,
   PaperSessionState,
 } from './types.js';
-
-const DEFAULT_MAX_PRICE_SLIPPAGE_PCT = 0.05;
 
 export type PaperExecutionFillLevel = ExecutionFillLevel;
 
@@ -75,9 +72,6 @@ export interface ClosePaperPositionResult {
   closedAt: string;
 }
 
-type PaperBuyExecution = BuyExecutionPreview;
-type PaperSellExecution = SellExecutionPreview;
-
 function isFinitePositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -88,14 +82,6 @@ function floorShares(value: number): number {
   }
 
   return Math.floor((value + Number.EPSILON) * 100) / 100;
-}
-
-function slippageTrimmedBuyPreview(original: PaperBuyExecution, limited: PaperBuyExecution): boolean {
-  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
-}
-
-function slippageTrimmedSellPreview(original: PaperSellExecution, limited: PaperSellExecution): boolean {
-  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
 }
 
 function toPositionSide(side: PaperSessionPredictionSide): PaperSessionPosition['side'] {
@@ -233,11 +219,10 @@ export function openPaperPosition(
   }
 
   const preview = previewBuyExecution(snapshot, side, requestedStake, feeModel);
-  const execution = preview ? applyBuySlippageLimit(preview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT) : null;
+  const execution = preview ? guardBuyExecution(preview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT) : null;
   if (
     !preview
     || !execution
-    || slippageTrimmedBuyPreview(preview, execution)
     || !isFinitePositiveNumber(execution.totalCost)
     || execution.totalCost > state.cash + 1e-9
   ) {
@@ -351,8 +336,8 @@ export function closePaperPosition(
   }
 
   const preview = previewSellExecution(snapshot, side, requestedShares, feeModel);
-  const execution = preview ? applySellSlippageLimit(preview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT) : null;
-  if (!preview || !execution || slippageTrimmedSellPreview(preview, execution)) {
+  const execution = preview ? guardSellExecution(preview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT) : null;
+  if (!preview || !execution) {
     return null;
   }
 

@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   applyBuySlippageLimit,
   applySellSlippageLimit,
+  DEFAULT_MAX_PRICE_SLIPPAGE_PCT,
+  guardBuyExecution,
+  guardSellExecution,
   hasOnlyPlaceholderOutcomeAsks,
   previewBuyExecution,
   previewSellExecution,
@@ -128,4 +131,33 @@ test('shared order-book sell slippage limit keeps only fills within 5% of the fr
   assert.equal(limited.shares, 1);
   assert.equal(limited.avgPrice, 0.52);
   assert.equal(limited.fills.length, 1);
+});
+
+test('shared order-book guard uses one default slippage rule for buy and sell', () => {
+  assert.equal(DEFAULT_MAX_PRICE_SLIPPAGE_PCT, 0.05);
+
+  const buyPreview = previewBuyExecution(createSnapshot({
+    upOrderBook: {
+      bids: [{ price: 0.52, size: 50 }],
+      asks: [
+        { price: 0.53, size: 1 },
+        { price: 0.57, size: 10 },
+      ],
+    },
+  }), 'up', 2, 'polymarket-2026-03-26');
+
+  const sellPreview = previewSellExecution(createSnapshot({
+    upOrderBook: {
+      bids: [
+        { price: 0.52, size: 1 },
+        { price: 0.48, size: 10 },
+      ],
+      asks: [{ price: 0.53, size: 50 }],
+    },
+  }), 'up', 2, 'polymarket-2026-03-26');
+
+  assert.ok(buyPreview);
+  assert.ok(sellPreview);
+  assert.equal(guardBuyExecution(buyPreview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT), null);
+  assert.equal(guardSellExecution(sellPreview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT), null);
 });

@@ -37,6 +37,8 @@ export interface SellExecutionPreview {
   fills: ExecutionFillLevel[];
 }
 
+export const DEFAULT_MAX_PRICE_SLIPPAGE_PCT = 0.05;
+
 interface LiquidityLevels {
   levels: PaperOrderBookLevel[];
   depthVisible: boolean;
@@ -241,6 +243,24 @@ export function applyBuySlippageLimit(
   };
 }
 
+export function wasExecutionTrimmed<
+  T extends { fills: ExecutionFillLevel[]; shares: number },
+>(original: T, limited: T): boolean {
+  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
+}
+
+export function guardBuyExecution(
+  preview: BuyExecutionPreview,
+  maxPriceSlippagePct: number,
+): BuyExecutionPreview | null {
+  const limitedPreview = applyBuySlippageLimit(preview, maxPriceSlippagePct);
+  if (!limitedPreview || wasExecutionTrimmed(preview, limitedPreview)) {
+    return null;
+  }
+
+  return limitedPreview;
+}
+
 export function previewSellExecution(
   snapshot: PaperMarketSnapshot,
   side: OutcomeSide,
@@ -330,4 +350,16 @@ export function applySellSlippageLimit(
     quotedPrice: preview.quotedPrice,
     fills,
   };
+}
+
+export function guardSellExecution(
+  preview: SellExecutionPreview,
+  maxPriceSlippagePct: number,
+): SellExecutionPreview | null {
+  const limitedPreview = applySellSlippageLimit(preview, maxPriceSlippagePct);
+  if (!limitedPreview || wasExecutionTrimmed(preview, limitedPreview)) {
+    return null;
+  }
+
+  return limitedPreview;
 }

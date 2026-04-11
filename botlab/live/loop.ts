@@ -15,14 +15,12 @@ import {
   type SettlePaperPositionResult,
 } from '../paper/executor.js';
 import {
-  applyBuySlippageLimit,
-  applySellSlippageLimit,
-  hasOnlyPlaceholderOutcomeAsks,
+  DEFAULT_MAX_PRICE_SLIPPAGE_PCT,
+  guardBuyExecution,
+  guardSellExecution,
   previewBuyExecution,
   previewSellExecution,
-  type BuyExecutionPreview,
   type ExecutionFillLevel,
-  type SellExecutionPreview,
 } from '../execution/order-book.js';
 import type {
   PaperMarketDetail,
@@ -46,7 +44,6 @@ import type {
 const DEFAULT_STRATEGY_ID = 'polybot-ported';
 const DEFAULT_FEE_MODEL: BacktestFeeModel = 'polymarket-2026-03-26';
 const DEFAULT_STAKE_OVERRIDE_USD = 1;
-const DEFAULT_MAX_PRICE_SLIPPAGE_PCT = 0.05;
 const LIVE_TIMEFRAME = '5m';
 const MAX_CONTEXT_CANDLES = 128;
 
@@ -113,9 +110,6 @@ export interface LiveCycleReport {
 }
 
 type LiveExecutionFillLevel = ExecutionFillLevel;
-type LiveBuyPreview = BuyExecutionPreview;
-type LiveSellPreview = SellExecutionPreview;
-
 function isFinitePositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -126,14 +120,6 @@ function floorShares(value: number): number {
   }
 
   return Math.floor((value + Number.EPSILON) * 100) / 100;
-}
-
-function slippageTrimmedBuyPreview(original: LiveBuyPreview, limited: LiveBuyPreview): boolean {
-  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
-}
-
-function slippageTrimmedSellPreview(original: LiveSellPreview, limited: LiveSellPreview): boolean {
-  return limited.fills.length < original.fills.length || limited.shares + 1e-9 < original.shares;
 }
 
 function cloneHistoryMap(history: LiveSessionHistoryMap): LiveSessionHistoryMap {
@@ -449,17 +435,17 @@ function roundPriceToTick(
 }
 
 function withBuySlippageLimit(
-  preview: LiveBuyPreview,
+  preview: NonNullable<ReturnType<typeof previewBuyExecution>>,
   tickSize: PaperMarketDetail['tickSize'],
   maxPriceSlippagePct: number,
-): { priceLimit: number; preview: LiveBuyPreview } | null {
+): { priceLimit: number; preview: NonNullable<ReturnType<typeof previewBuyExecution>> } | null {
   const anchorPrice = preview.fills[0]?.price ?? preview.avgPrice;
   if (!isFinitePositiveNumber(anchorPrice)) {
     return null;
   }
 
-  const limitedPreview = applyBuySlippageLimit(preview, maxPriceSlippagePct);
-  if (!limitedPreview || slippageTrimmedBuyPreview(preview, limitedPreview)) {
+  const limitedPreview = guardBuyExecution(preview, maxPriceSlippagePct);
+  if (!limitedPreview) {
     return null;
   }
 
@@ -470,17 +456,17 @@ function withBuySlippageLimit(
 }
 
 function withSellSlippageLimit(
-  preview: LiveSellPreview,
+  preview: NonNullable<ReturnType<typeof previewSellExecution>>,
   tickSize: PaperMarketDetail['tickSize'],
   maxPriceSlippagePct: number,
-): { priceLimit: number; preview: LiveSellPreview } | null {
+): { priceLimit: number; preview: NonNullable<ReturnType<typeof previewSellExecution>> } | null {
   const anchorPrice = preview.fills[0]?.price ?? preview.avgPrice;
   if (!Number.isFinite(anchorPrice) || anchorPrice < 0) {
     return null;
   }
 
-  const limitedPreview = applySellSlippageLimit(preview, maxPriceSlippagePct);
-  if (!limitedPreview || slippageTrimmedSellPreview(preview, limitedPreview)) {
+  const limitedPreview = guardSellExecution(preview, maxPriceSlippagePct);
+  if (!limitedPreview) {
     return null;
   }
 
