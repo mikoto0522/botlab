@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -1508,6 +1509,50 @@ test('realtime paper market source degrades cleanly when websocket support is un
     assert.deepEqual(snapshots, []);
   } finally {
     webSocketGlobal.WebSocket = originalWebSocket;
+  }
+});
+
+test('loadDefaultWebSocketFactory falls back to the ws package when global WebSocket is unavailable', async () => {
+  const webSocketGlobal = globalThis as unknown as { WebSocket?: unknown };
+  const originalWebSocket = webSocketGlobal.WebSocket;
+  webSocketGlobal.WebSocket = undefined;
+
+  const { WebSocketServer } = await import('ws');
+  const server = new WebSocketServer({ port: 0 });
+
+  try {
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => resolve());
+    });
+
+    const { loadDefaultWebSocketFactory } = await import('../paper/realtime-market-source.js');
+    const factory = await loadDefaultWebSocketFactory();
+    assert.equal(typeof factory, 'function');
+
+    const port = (server.address() as AddressInfo).port;
+    const socket = factory?.(`ws://127.0.0.1:${port}`);
+    assert.ok(socket, 'expected a websocket factory result');
+
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener('open', () => {
+        socket.close();
+        resolve();
+      });
+      socket.addEventListener('error', () => {
+        reject(new Error('expected ws fallback socket to connect'));
+      });
+    });
+  } finally {
+    webSocketGlobal.WebSocket = originalWebSocket;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 });
 

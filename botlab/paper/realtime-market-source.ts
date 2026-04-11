@@ -103,6 +103,7 @@ export interface HybridPaperMarketSource {
 export interface RealtimePaperMarketSourceOptions {
   fetchImpl?: typeof fetch;
   websocketFactory?: RealtimeSocketFactory;
+  loadWebSocketFactory?: () => Promise<RealtimeSocketFactory | null>;
   now?: () => Date;
   initialWaitMs?: number;
   pingIntervalMs?: number;
@@ -303,8 +304,22 @@ function looksLikeReliableBinarySnapshot(snapshot: PaperMarketSnapshot): boolean
   return true;
 }
 
-function getDefaultWebSocketFactory(): RealtimeSocketFactory {
-  return (url: string) => new WebSocket(url) as unknown as RealtimeSocketLike;
+export async function loadDefaultWebSocketFactory(): Promise<RealtimeSocketFactory | null> {
+  if (typeof WebSocket === 'function') {
+    return (url: string) => new WebSocket(url) as unknown as RealtimeSocketLike;
+  }
+
+  try {
+    const wsModule = await import('ws');
+    const NodeWebSocket = wsModule.WebSocket;
+    if (typeof NodeWebSocket === 'function') {
+      return (url: string) => new NodeWebSocket(url) as unknown as RealtimeSocketLike;
+    }
+  } catch {
+    // Ignore module lookup failures and let the caller handle the missing websocket support.
+  }
+
+  return null;
 }
 
 export function createRealtimeSnapshotCache(): RealtimeSnapshotCache {
@@ -548,7 +563,6 @@ export function createRealtimePaperMarketSource(
   options: RealtimePaperMarketSourceOptions = {},
 ): RealtimePaperMarketSource {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const websocketFactory = options.websocketFactory ?? getDefaultWebSocketFactory();
   const now = options.now ?? (() => new Date());
   const initialWaitMs = options.initialWaitMs ?? DEFAULT_INITIAL_WAIT_MS;
   const pingIntervalMs = options.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
@@ -568,6 +582,7 @@ export function createRealtimePaperMarketSource(
   let nextRefreshAt = 0;
   let reconnectAttempts = 0;
   let fatalError: Error | null = null;
+  let resolvedWebSocketFactoryPromise: Promise<RealtimeSocketFactory | null> | null = null;
   let readyWaiters: Array<{
     resolve: () => void;
     reject: (error: Error) => void;
@@ -741,6 +756,22 @@ export function createRealtimePaperMarketSource(
     }, reconnectDelayMs);
   }
 
+  function resolveWebSocketFactory(): Promise<RealtimeSocketFactory | null> {
+    if (options.websocketFactory) {
+      return Promise.resolve(options.websocketFactory);
+    }
+
+    if (options.loadWebSocketFactory) {
+      return options.loadWebSocketFactory();
+    }
+
+    if (!resolvedWebSocketFactoryPromise) {
+      resolvedWebSocketFactoryPromise = loadDefaultWebSocketFactory();
+    }
+
+    return resolvedWebSocketFactoryPromise;
+  }
+
   function handleSocketMessage(event: RealtimeSocketMessageEvent): void {
     let parsed: unknown;
     try {
@@ -773,11 +804,12 @@ export function createRealtimePaperMarketSource(
     }
   }
 
-  function openSocket(detailsByAsset: Partial<Record<PaperMarketAsset, RealtimeAssetMetadata>>): void {
+  async function openSocket(detailsByAsset: Partial<Record<PaperMarketAsset, RealtimeAssetMetadata>>): Promise<void> {
     clearSocketResources();
     let nextSocket: RealtimeSocketLike | null = null;
     try {
-      nextSocket = websocketFactory(REALTIME_MARKET_SOCKET_URL);
+      const websocketFactory = await resolveWebSocketFactory();
+      nextSocket = websocketFactory?.(REALTIME_MARKET_SOCKET_URL) ?? null;
     } catch {
       nextSocket = null;
     }
@@ -866,7 +898,7 @@ export function createRealtimePaperMarketSource(
       }
 
       nextRefreshAt = nextBucketRefreshTime(metadataByAsset);
-      openSocket(metadataByAsset);
+      await openSocket(metadataByAsset);
     };
 
     refreshPromise = nextRefresh().finally(() => {
