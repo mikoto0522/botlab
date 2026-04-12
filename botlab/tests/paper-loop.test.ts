@@ -409,6 +409,115 @@ test('runPaperLoop resumes a stored position and settles it when the saved marke
   assert.equal(events.some((event) => event.type === 'paper-position-settled'), true);
 });
 
+test('runPaperLoop settles an open position from the same run after that market bucket expires', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-same-run-settle-'));
+  const strategyDir = writeLoopStrategy();
+  let cycleIndex = 0;
+  let oldSlugLookups = 0;
+
+  const cycleSnapshots: PaperMarketSnapshot[][] = [
+    [
+      createSnapshot({
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1711443600',
+        bucketStartTime: '2026-03-26T09:00:00.000Z',
+        bucketStartEpoch: 1711443600,
+        upPrice: 0.4,
+        downPrice: 0.6,
+        upAsk: 0.42,
+        downAsk: 0.62,
+        fetchedAt: '2026-03-26T09:00:10.000Z',
+      }),
+      createSnapshot({
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1711443600',
+        bucketStartTime: '2026-03-26T09:00:00.000Z',
+        bucketStartEpoch: 1711443600,
+        upPrice: 0.55,
+        downPrice: 0.45,
+        upAsk: 0.57,
+        downAsk: 0.47,
+        fetchedAt: '2026-03-26T09:00:10.000Z',
+      }),
+    ],
+    [
+      createSnapshot({
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1711443900',
+        bucketStartTime: '2026-03-26T09:05:00.000Z',
+        bucketStartEpoch: 1711443900,
+        upPrice: 0.51,
+        downPrice: 0.49,
+        upAsk: 0.53,
+        downAsk: 0.51,
+        fetchedAt: '2026-03-26T09:05:10.000Z',
+      }),
+      createSnapshot({
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1711443900',
+        bucketStartTime: '2026-03-26T09:05:00.000Z',
+        bucketStartEpoch: 1711443900,
+        upPrice: 0.48,
+        downPrice: 0.52,
+        upAsk: 0.5,
+        downAsk: 0.54,
+        fetchedAt: '2026-03-26T09:05:10.000Z',
+      }),
+    ],
+  ];
+
+  await runPaperLoop({
+    sessionName: 'Same Run Settle Session',
+    strategyId: 'paper-loop-test',
+    strategyDir,
+    cwd,
+    intervalMs: 0,
+    sleepMs: async () => {},
+    maxCycles: 2,
+    marketSource: {
+      getCurrentSnapshots: async () => {
+        const snapshots = cycleSnapshots[cycleIndex];
+        cycleIndex += 1;
+
+        assert.ok(snapshots, 'expected the loop to stop before requesting another cycle');
+        return snapshots.map((snapshot) => ({ ...snapshot }));
+      },
+      getSnapshotBySlug: async (slug) => {
+        if (slug === 'btc-updown-5m-1711443600') {
+          oldSlugLookups += 1;
+          return createSnapshot({
+            asset: 'BTC',
+            slug,
+            bucketStartTime: '2026-03-26T09:00:00.000Z',
+            bucketStartEpoch: 1711443600,
+            upPrice: 1,
+            downPrice: 0,
+            upAsk: 1,
+            downAsk: 0,
+            closed: true,
+            active: false,
+            acceptingOrders: false,
+            fetchedAt: '2026-03-26T09:05:03.000Z',
+          });
+        }
+
+        const current = cycleSnapshots.flat().find((snapshot) => snapshot.slug === slug);
+        assert.ok(current, `unexpected settlement lookup for ${slug}`);
+        return { ...current };
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Same Run Settle Session', cwd);
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'Same Run Settle Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  assert.equal(oldSlugLookups > 0, true);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(events.some((event) => event.type === 'paper-position-settled'), true);
+});
+
 test('runPaperLoop closes an open position when the strategy returns sell on a later cycle', async () => {
   const { runPaperLoop } = await import('../paper/loop.js');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-close-'));
@@ -956,4 +1065,94 @@ test('runPaperLoop reacts to a single-asset realtime signal without waiting for 
   assert.equal(state.tradeCount, 1);
   assert.equal(state.positions.ETH?.predictionSide, 'up');
   assert.equal(state.positions.BTC, undefined);
+});
+
+test('runPaperLoop refreshes a stale realtime position snapshot after that bucket has expired', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-realtime-stale-position-'));
+  const strategyDir = writeAssetPaperStrategy('BTC');
+  let waitForNextSignalCalls = 0;
+  let oldSlugLookups = 0;
+
+  await runPaperLoop({
+    sessionName: 'Paper Realtime Stale Position Session',
+    strategyId: 'paper-btc-test',
+    strategyDir,
+    cwd,
+    intervalMs: 30_000,
+    maxCycles: 3,
+    sleepMs: async () => {
+      assert.fail('paper loop should not sleep when a realtime signal source is available');
+    },
+    marketSource: {
+      getCurrentSnapshots: async () => [
+        createSnapshot({
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1711443600',
+          bucketStartTime: '2026-03-26T09:00:00.000Z',
+          bucketStartEpoch: 1711443600,
+          upPrice: 0.4,
+          downPrice: 0.6,
+          upAsk: 0.42,
+          downAsk: 0.62,
+          fetchedAt: '2026-03-26T09:00:10.000Z',
+        }),
+        createSnapshot({
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1711443600',
+          bucketStartTime: '2026-03-26T09:00:00.000Z',
+          bucketStartEpoch: 1711443600,
+          upPrice: 0.55,
+          downPrice: 0.45,
+          upAsk: 0.57,
+          downAsk: 0.47,
+          fetchedAt: '2026-03-26T09:00:10.000Z',
+        }),
+      ],
+      waitForNextSignal: async () => {
+        waitForNextSignalCalls += 1;
+        return createSnapshot({
+          asset: 'ETH',
+          slug: 'eth-updown-5m-1711443900',
+          bucketStartTime: '2026-03-26T09:05:00.000Z',
+          bucketStartEpoch: 1711443900,
+          upPrice: 0.48,
+          downPrice: 0.52,
+          upAsk: 0.5,
+          downAsk: 0.54,
+          fetchedAt: '2026-03-26T09:05:10.000Z',
+        });
+      },
+      getSnapshotBySlug: async (slug) => {
+        if (slug === 'btc-updown-5m-1711443600') {
+          oldSlugLookups += 1;
+          return createSnapshot({
+            asset: 'BTC',
+            slug,
+            bucketStartTime: '2026-03-26T09:00:00.000Z',
+            bucketStartEpoch: 1711443600,
+            upPrice: 1,
+            downPrice: 0,
+            upAsk: 1,
+            downAsk: 0,
+            closed: true,
+            active: false,
+            acceptingOrders: false,
+            fetchedAt: '2026-03-26T09:05:03.000Z',
+          });
+        }
+
+        assert.fail(`unexpected slug lookup for ${slug}`);
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Paper Realtime Stale Position Session', cwd);
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'Paper Realtime Stale Position Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  assert.equal(waitForNextSignalCalls, 1);
+  assert.equal(oldSlugLookups > 0, true);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(events.some((event) => event.type === 'paper-position-settled'), true);
 });

@@ -328,6 +328,7 @@ async function resolvePositionSnapshot(
   currentSnapshotsBySlug: Map<string, PaperMarketSnapshot>,
   marketSource: PaperLoopMarketSource,
   cache: Map<string, PaperMarketSnapshot>,
+  currentTimestamp: string,
 ): Promise<PaperMarketSnapshot> {
   const marketSlug = position.marketSlug;
   if (!marketSlug) {
@@ -335,7 +336,17 @@ async function resolvePositionSnapshot(
   }
 
   const currentSnapshot = currentSnapshotsBySlug.get(marketSlug);
-  if (currentSnapshot) {
+  const marketEndAt = position.endDate ? Date.parse(position.endDate) : Number.NaN;
+  const nowMs = Date.parse(currentTimestamp);
+  const shouldRefreshExpiredSnapshot = (
+    currentSnapshot
+    && !currentSnapshot.closed
+    && Number.isFinite(marketEndAt)
+    && Number.isFinite(nowMs)
+    && nowMs >= marketEndAt
+  );
+
+  if (currentSnapshot && !shouldRefreshExpiredSnapshot) {
     return currentSnapshot;
   }
 
@@ -557,6 +568,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             latestSnapshotsBySlug,
             input.marketSource,
             snapshotCache,
+            cycleTimestamp,
           );
 
           if (isSettledSnapshot(positionSnapshot)) {
@@ -629,6 +641,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             latestSnapshotsBySlug,
             input.marketSource,
             snapshotCache,
+            cycleTimestamp,
           );
 
           if (isSettledSnapshot(positionSnapshot)) {
@@ -741,6 +754,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           snapshotsBySlug,
           input.marketSource,
           snapshotCache,
+          cycleTimestamp,
         );
 
         if (isSettledSnapshot(positionSnapshot)) {
