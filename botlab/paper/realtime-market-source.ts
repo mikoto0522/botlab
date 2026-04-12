@@ -14,6 +14,7 @@ const DEFAULT_PING_INTERVAL_MS = 10_000;
 const DEFAULT_STALE_AFTER_MS = 15_000;
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
+const DISPLAY_PRICE_SPREAD_THRESHOLD = 0.1;
 
 type RealtimeOutcomeSide = 'up' | 'down';
 
@@ -148,6 +149,66 @@ function normalizeBinaryPrice(value: number | null): number | null {
   }
 
   return value;
+}
+
+function midpoint(bestBid: number | null, bestAsk: number | null): number | null {
+  if (bestBid === null || bestAsk === null) {
+    return null;
+  }
+
+  return normalizeBinaryPrice((bestBid + bestAsk) / 2);
+}
+
+function spread(bestBid: number | null, bestAsk: number | null): number | null {
+  if (bestBid === null || bestAsk === null) {
+    return null;
+  }
+
+  return normalizeBinaryPrice(bestAsk - bestBid);
+}
+
+function selectRealtimeDisplayPrice(
+  bestBid: number | null,
+  bestAsk: number | null,
+  lastTradePrice: number | null,
+): number | null {
+  const bookMidpoint = midpoint(bestBid, bestAsk);
+  const bookSpread = spread(bestBid, bestAsk);
+
+  if (bookMidpoint !== null && bookSpread !== null && bookSpread <= DISPLAY_PRICE_SPREAD_THRESHOLD) {
+    return bookMidpoint;
+  }
+
+  if (lastTradePrice !== null) {
+    return lastTradePrice;
+  }
+
+  return bookMidpoint;
+}
+
+function normalizeRealtimeDisplayPair(
+  upPrice: number | null,
+  downPrice: number | null,
+): { upPrice: number | null; downPrice: number | null } {
+  if (upPrice !== null && downPrice !== null && Math.abs((upPrice + downPrice) - 1) <= 0.08) {
+    return { upPrice, downPrice };
+  }
+
+  if (upPrice !== null) {
+    return {
+      upPrice,
+      downPrice: normalizeBinaryPrice(1 - upPrice),
+    };
+  }
+
+  if (downPrice !== null) {
+    return {
+      upPrice: normalizeBinaryPrice(1 - downPrice),
+      downPrice,
+    };
+  }
+
+  return { upPrice: null, downPrice: null };
 }
 
 function toIsoString(value: number | string | Date | undefined): string {
@@ -437,6 +498,11 @@ function maybePublishSnapshot(
     return null;
   }
 
+  const displayPair = normalizeRealtimeDisplayPair(upTokenState.price, downTokenState.price);
+  if (displayPair.upPrice === null || displayPair.downPrice === null) {
+    return null;
+  }
+
   ingestRealtimeBestBidAsk(cache, {
     asset: metadata.detail.asset,
     slug: metadata.detail.slug,
@@ -444,8 +510,8 @@ function maybePublishSnapshot(
     bucketStartEpoch: metadata.detail.bucketStartEpoch,
     bucketStartTime: metadata.detail.bucketStartTime,
     fetchedAt: upTokenState.fetchedAt >= downTokenState.fetchedAt ? upTokenState.fetchedAt : downTokenState.fetchedAt,
-    upPrice: upTokenState.price,
-    downPrice: downTokenState.price,
+    upPrice: displayPair.upPrice,
+    downPrice: displayPair.downPrice,
     upAsk: upTokenState.bestAsk,
     downAsk: downTokenState.bestAsk,
     upOrderBook: {
@@ -506,7 +572,11 @@ function handleBookPayload(
   }
 
   const next = updateTokenState(tokenStates, tokenId, {
-    price: normalizeBinaryPrice(coerceNumber(payload.last_trade_price)),
+    price: selectRealtimeDisplayPrice(
+      readBookLevelPrice(payload.bids),
+      readBookLevelPrice(payload.asks),
+      normalizeBinaryPrice(coerceNumber(payload.last_trade_price)),
+    ),
     bestBid: readBookLevelPrice(payload.bids),
     bestAsk: readBookLevelPrice(payload.asks),
     bids: readOrderBookLevels(payload.bids),
@@ -551,7 +621,11 @@ function handlePriceChangePayload(
     }
 
     const next = updateTokenState(tokenStates, tokenId, {
-      price: normalizeBinaryPrice(coerceNumber(item.price)),
+      price: selectRealtimeDisplayPrice(
+        normalizeBinaryPrice(coerceNumber(item.best_bid)),
+        normalizeBinaryPrice(coerceNumber(item.best_ask)),
+        normalizeBinaryPrice(coerceNumber(item.price)),
+      ),
       bestBid: normalizeBinaryPrice(coerceNumber(item.best_bid)),
       bestAsk: normalizeBinaryPrice(coerceNumber(item.best_ask)),
       fetchedAt: eventTimestamp,
