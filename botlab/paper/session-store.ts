@@ -246,6 +246,21 @@ function toSummary(state: PaperSessionState): PaperSessionSummary {
   };
 }
 
+function shouldPersistPaperSessionEvent(event: PaperSessionEvent): boolean {
+  if (event.type === 'paper-strategy-decision') {
+    return event.action !== 'hold' && event.action !== 'flat';
+  }
+
+  if (event.type === 'paper-cycle-complete') {
+    const openedCount = typeof event.openedCount === 'number' ? event.openedCount : 0;
+    const closedCount = typeof event.closedCount === 'number' ? event.closedCount : 0;
+    const settledCount = typeof event.settledCount === 'number' ? event.settledCount : 0;
+    return openedCount > 0 || closedCount > 0 || settledCount > 0;
+  }
+
+  return true;
+}
+
 export function createEmptyPaperSessionState(
   sessionName: string,
   options: { startingCash?: number; now?: string } = {},
@@ -310,6 +325,10 @@ export function savePaperSessionState(state: PaperSessionState, cwd = process.cw
 
 export function appendPaperSessionEvent(sessionName: string, event: PaperSessionEvent, cwd = process.cwd()): PaperSessionPaths {
   const paths = resolvePaperSessionPaths(cwd, sessionName);
+
+  if (!shouldPersistPaperSessionEvent(event)) {
+    return paths;
+  }
 
   fs.mkdirSync(paths.rootDir, { recursive: true });
   fs.appendFileSync(paths.eventsPath, `${JSON.stringify(event)}\n`, 'utf-8');

@@ -246,6 +246,21 @@ function toSummary(state: LiveSessionState): LiveSessionSummary {
   };
 }
 
+function shouldPersistLiveSessionEvent(event: LiveSessionEvent): boolean {
+  if (event.type === 'live-strategy-decision') {
+    return event.action !== 'hold' && event.action !== 'flat';
+  }
+
+  if (event.type === 'live-cycle-complete') {
+    const openedCount = typeof event.openedCount === 'number' ? event.openedCount : 0;
+    const closedCount = typeof event.closedCount === 'number' ? event.closedCount : 0;
+    const settledCount = typeof event.settledCount === 'number' ? event.settledCount : 0;
+    return openedCount > 0 || closedCount > 0 || settledCount > 0;
+  }
+
+  return true;
+}
+
 export function createEmptyLiveSessionState(
   sessionName: string,
   options: { startingCash?: number; now?: string } = {},
@@ -310,6 +325,10 @@ export function saveLiveSessionState(state: LiveSessionState, cwd = process.cwd(
 
 export function appendLiveSessionEvent(sessionName: string, event: LiveSessionEvent, cwd = process.cwd()): LiveSessionPaths {
   const paths = resolveLiveSessionPaths(cwd, sessionName);
+
+  if (!shouldPersistLiveSessionEvent(event)) {
+    return paths;
+  }
 
   fs.mkdirSync(paths.rootDir, { recursive: true });
   fs.appendFileSync(paths.eventsPath, `${JSON.stringify(event)}\n`, 'utf-8');

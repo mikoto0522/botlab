@@ -268,12 +268,10 @@ test('runPaperLoop respects maxCycles, updates same-bucket history in place, and
   assert.equal(state.positions.BTC?.shares, 233.99);
   assert.equal(state.cash, 900.00052108864);
   assert.equal(state.equity, 1005.2960210886399);
-  assert.equal(events.length, 7);
+  assert.equal(events.length, 3);
   assert.equal(events[0]?.type, 'paper-strategy-decision');
-  assert.equal(events[1]?.type, 'paper-strategy-decision');
-  assert.equal(events[2]?.type, 'paper-position-opened');
-  assert.equal(events[3]?.type, 'paper-cycle-complete');
-  assert.equal(events[6]?.type, 'paper-cycle-complete');
+  assert.equal(events[1]?.type, 'paper-position-opened');
+  assert.equal(events[2]?.type, 'paper-cycle-complete');
 });
 
 test('runPaperLoop resumes a stored position and settles it when the saved market closes', async () => {

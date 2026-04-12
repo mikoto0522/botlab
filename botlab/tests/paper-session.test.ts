@@ -209,3 +209,71 @@ test('appendPaperSessionEvent adds one JSONL record per call', () => {
     side: 'up',
   });
 });
+
+test('appendPaperSessionEvent skips quiet per-cycle noise but keeps meaningful events', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-event-filter-'));
+  const sessionName = 'Filtered Event Session';
+
+  appendPaperSessionEvent(sessionName, {
+    type: 'paper-strategy-decision',
+    timestamp: '2026-03-26T09:30:00.000Z',
+    asset: 'BTC',
+    action: 'hold',
+    side: 'flat',
+    reason: 'no edge',
+  }, cwd);
+  appendPaperSessionEvent(sessionName, {
+    type: 'paper-cycle-complete',
+    timestamp: '2026-03-26T09:30:00.000Z',
+    cycleCount: 1,
+    cash: 100,
+    equity: 100,
+    openPositionCount: 0,
+    openedCount: 0,
+    closedCount: 0,
+    settledCount: 0,
+  }, cwd);
+  appendPaperSessionEvent(sessionName, {
+    type: 'paper-strategy-decision',
+    timestamp: '2026-03-26T09:31:00.000Z',
+    asset: 'BTC',
+    action: 'buy',
+    side: 'up',
+    reason: 'strong edge',
+  }, cwd);
+  appendPaperSessionEvent(sessionName, {
+    type: 'paper-cycle-complete',
+    timestamp: '2026-03-26T09:31:00.000Z',
+    cycleCount: 2,
+    cash: 90,
+    equity: 91,
+    openPositionCount: 1,
+    openedCount: 1,
+    closedCount: 0,
+    settledCount: 0,
+  }, cwd);
+
+  const { eventsPath } = resolvePaperSessionPaths(cwd, sessionName);
+  const lines = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n');
+
+  assert.equal(lines.length, 2);
+  assert.deepEqual(JSON.parse(lines[0] as string), {
+    type: 'paper-strategy-decision',
+    timestamp: '2026-03-26T09:31:00.000Z',
+    asset: 'BTC',
+    action: 'buy',
+    side: 'up',
+    reason: 'strong edge',
+  });
+  assert.deepEqual(JSON.parse(lines[1] as string), {
+    type: 'paper-cycle-complete',
+    timestamp: '2026-03-26T09:31:00.000Z',
+    cycleCount: 2,
+    cash: 90,
+    equity: 91,
+    openPositionCount: 1,
+    openedCount: 1,
+    closedCount: 0,
+    settledCount: 0,
+  });
+});
