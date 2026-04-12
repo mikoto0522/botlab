@@ -37,6 +37,32 @@ export interface OpenPaperPositionResult {
   position: PaperSessionPosition;
 }
 
+export interface RejectedOpenPaperPositionResult {
+  attemptedAt: string;
+  asset: PaperSessionAsset;
+  marketSlug: string;
+  side: PaperSessionPredictionSide;
+  requestedStake: number | null;
+  reasonCode:
+    | 'position-already-open'
+    | 'no-cash-available'
+    | 'no-visible-entry-liquidity'
+    | 'entry-could-not-be-filled'
+    | 'entry-slippage-too-wide'
+    | 'entry-cost-exceeds-cash';
+  reason: string;
+  quotedPrice: number | null;
+  bookVisible: boolean;
+}
+
+interface ResolvedOpenPaperPositionAttempt {
+  asset: PaperSessionAsset;
+  marketSlug: string;
+  side: PaperSessionPredictionSide;
+  requestedStake: number;
+  execution: NonNullable<ReturnType<typeof guardBuyExecution>>;
+}
+
 export interface SettlePaperPositionResult {
   asset: PaperSessionAsset;
   marketSlug: string;
@@ -106,6 +132,171 @@ function getExitPrice(snapshot: PaperMarketSnapshot, side: PaperSessionPredictio
   return side === 'up'
     ? snapshot.upPrice ?? 0
     : snapshot.downPrice ?? 0;
+}
+
+function getEntryQuotedPrice(snapshot: PaperMarketSnapshot, side: PaperSessionPredictionSide): number | null {
+  const quotedPrice = side === 'up'
+    ? snapshot.upAsk ?? snapshot.upPrice
+    : snapshot.downAsk ?? snapshot.downPrice;
+
+  return typeof quotedPrice === 'number' && Number.isFinite(quotedPrice)
+    ? quotedPrice
+    : null;
+}
+
+function hasVisibleEntryDepth(snapshot: PaperMarketSnapshot, side: PaperSessionPredictionSide): boolean {
+  const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
+  return Boolean(orderBook && orderBook.asks.length > 0);
+}
+
+export function resolveOpenPaperPositionAttempt(
+  state: PaperSessionState,
+  asset: PaperSessionAsset,
+  snapshot: PaperMarketSnapshot,
+  decision: BotlabStrategyDecision,
+  feeModel: BacktestFeeModel,
+): ResolvedOpenPaperPositionAttempt | RejectedOpenPaperPositionResult {
+  if (decision.action !== 'buy') {
+    throw new Error(`Paper strategy must choose buy before opening ${asset} @ ${snapshot.slug}`);
+  }
+
+  const side = decision.side;
+  if (side !== 'up' && side !== 'down') {
+    throw new Error(`Paper strategy must choose side up or down for ${asset} @ ${snapshot.slug}`);
+  }
+  if (!isFinitePositiveNumber(decision.size)) {
+    throw new Error(`Paper strategy returned invalid size for ${asset} @ ${snapshot.slug}`);
+  }
+  if (hasOpenPaperPosition(state.positions[asset])) {
+    return {
+      attemptedAt: snapshot.fetchedAt,
+      asset,
+      marketSlug: snapshot.slug,
+      side,
+      requestedStake: null,
+      reasonCode: 'position-already-open',
+      reason: 'A position is already open for this asset.',
+      quotedPrice: getEntryQuotedPrice(snapshot, side),
+      bookVisible: hasVisibleEntryDepth(snapshot, side),
+    };
+  }
+
+  const requestedStake = Math.min(state.cash, decision.size);
+  if (!isFinitePositiveNumber(requestedStake)) {
+    return {
+      attemptedAt: snapshot.fetchedAt,
+      asset,
+      marketSlug: snapshot.slug,
+      side,
+      requestedStake,
+      reasonCode: 'no-cash-available',
+      reason: 'No cash was available for a new paper entry.',
+      quotedPrice: getEntryQuotedPrice(snapshot, side),
+      bookVisible: hasVisibleEntryDepth(snapshot, side),
+    };
+  }
+
+  const preview = previewBuyExecution(snapshot, side, requestedStake, feeModel);
+  if (!preview) {
+    const bookVisible = hasVisibleEntryDepth(snapshot, side);
+    return {
+      attemptedAt: snapshot.fetchedAt,
+      asset,
+      marketSlug: snapshot.slug,
+      side,
+      requestedStake,
+      reasonCode: bookVisible ? 'entry-could-not-be-filled' : 'no-visible-entry-liquidity',
+      reason: bookVisible
+        ? 'Visible asks could not fill the requested paper entry.'
+        : 'No visible ask depth was available for the chosen side.',
+      quotedPrice: getEntryQuotedPrice(snapshot, side),
+      bookVisible,
+    };
+  }
+
+  const execution = guardBuyExecution(preview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT);
+  if (!execution) {
+    return {
+      attemptedAt: snapshot.fetchedAt,
+      asset,
+      marketSlug: snapshot.slug,
+      side,
+      requestedStake,
+      reasonCode: 'entry-slippage-too-wide',
+      reason: 'Visible asks exceeded the paper entry slippage guard.',
+      quotedPrice: preview.quotedPrice,
+      bookVisible: preview.bookVisible,
+    };
+  }
+
+  if (!isFinitePositiveNumber(execution.totalCost) || execution.totalCost > state.cash + 1e-9) {
+    return {
+      attemptedAt: snapshot.fetchedAt,
+      asset,
+      marketSlug: snapshot.slug,
+      side,
+      requestedStake,
+      reasonCode: 'entry-cost-exceeds-cash',
+      reason: 'The paper entry cost exceeded available cash.',
+      quotedPrice: execution.quotedPrice,
+      bookVisible: execution.bookVisible,
+    };
+  }
+
+  return {
+    asset,
+    marketSlug: snapshot.slug,
+    side,
+    requestedStake,
+    execution,
+  };
+}
+
+export function applyOpenPaperPositionAttempt(
+  state: PaperSessionState,
+  snapshot: PaperMarketSnapshot,
+  attempt: ResolvedOpenPaperPositionAttempt,
+  openedAt = snapshot.fetchedAt,
+): OpenPaperPositionResult {
+  const { asset, side, requestedStake, execution } = attempt;
+
+  const position: PaperSessionPosition = {
+    asset,
+    side: toPositionSide(side),
+    predictionSide: side,
+    size: execution.shares,
+    shares: execution.shares,
+    stake: execution.totalCost,
+    entryPrice: execution.avgPrice,
+    entryFee: execution.totalFee,
+    marketSlug: snapshot.slug,
+    openedAt,
+    bucketStartTime: snapshot.bucketStartTime,
+    endDate: snapshot.endDate,
+  };
+
+  state.cash -= execution.totalCost;
+  state.positions[asset] = position;
+  state.tradeCount += 1;
+
+  return {
+    asset,
+    marketSlug: snapshot.slug,
+    side,
+    requestedStake,
+    shares: execution.shares,
+    stake: execution.totalCost,
+    entryPrice: execution.avgPrice,
+    entryFee: execution.totalFee,
+    totalCost: execution.totalCost,
+    partialFill: execution.partialFill,
+    levelsConsumed: execution.levelsConsumed,
+    bookVisible: execution.bookVisible,
+    quotedPrice: execution.quotedPrice,
+    fills: execution.fills,
+    openedAt,
+    position,
+  };
 }
 
 function getMarkExitLiquidityLevels(
@@ -202,70 +393,11 @@ export function openPaperPosition(
     return null;
   }
 
-  const side = decision.side;
-  if (side !== 'up' && side !== 'down') {
-    throw new Error(`Paper strategy must choose side up or down for ${asset} @ ${snapshot.slug}`);
-  }
-  if (!isFinitePositiveNumber(decision.size)) {
-    throw new Error(`Paper strategy returned invalid size for ${asset} @ ${snapshot.slug}`);
-  }
-  if (hasOpenPaperPosition(state.positions[asset])) {
+  const attempt = resolveOpenPaperPositionAttempt(state, asset, snapshot, decision, feeModel);
+  if ('reasonCode' in attempt) {
     return null;
   }
-
-  const requestedStake = Math.min(state.cash, decision.size);
-  if (!isFinitePositiveNumber(requestedStake)) {
-    return null;
-  }
-
-  const preview = previewBuyExecution(snapshot, side, requestedStake, feeModel);
-  const execution = preview ? guardBuyExecution(preview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT) : null;
-  if (
-    !preview
-    || !execution
-    || !isFinitePositiveNumber(execution.totalCost)
-    || execution.totalCost > state.cash + 1e-9
-  ) {
-    return null;
-  }
-
-  const position: PaperSessionPosition = {
-    asset,
-    side: toPositionSide(side),
-    predictionSide: side,
-    size: execution.shares,
-    shares: execution.shares,
-    stake: execution.totalCost,
-    entryPrice: execution.avgPrice,
-    entryFee: execution.totalFee,
-    marketSlug: snapshot.slug,
-    openedAt,
-    bucketStartTime: snapshot.bucketStartTime,
-    endDate: snapshot.endDate,
-  };
-
-  state.cash -= execution.totalCost;
-  state.positions[asset] = position;
-  state.tradeCount += 1;
-
-  return {
-    asset,
-    marketSlug: snapshot.slug,
-    side,
-    requestedStake,
-    shares: execution.shares,
-    stake: execution.totalCost,
-    entryPrice: execution.avgPrice,
-    entryFee: execution.totalFee,
-    totalCost: execution.totalCost,
-    partialFill: execution.partialFill,
-    levelsConsumed: execution.levelsConsumed,
-    bookVisible: execution.bookVisible,
-    quotedPrice: execution.quotedPrice,
-    fills: execution.fills,
-    openedAt,
-    position,
-  };
+  return applyOpenPaperPositionAttempt(state, snapshot, attempt, openedAt);
 }
 
 export function settlePaperPosition(

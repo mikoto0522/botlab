@@ -10,13 +10,15 @@ import type {
 } from '../core/types.js';
 import type { PaperMarketSnapshot } from './market-source.js';
 import {
+  applyOpenPaperPositionAttempt,
   calculatePaperSessionEquity,
   closePaperPosition,
   hasOpenPaperPosition,
-  openPaperPosition,
+  resolveOpenPaperPositionAttempt,
   settlePaperPosition,
   type ClosePaperPositionResult,
   type OpenPaperPositionResult,
+  type RejectedOpenPaperPositionResult,
   type SettlePaperPositionResult,
 } from './executor.js';
 import {
@@ -499,6 +501,27 @@ function appendSettlementEvents(
   }
 }
 
+function appendRejectedOpenEvents(
+  sessionName: string,
+  rejected: RejectedOpenPaperPositionResult[],
+  cwd: string | undefined,
+): void {
+  for (const item of rejected) {
+    appendPaperSessionEvent(sessionName, {
+      type: 'paper-position-open-rejected',
+      timestamp: item.attemptedAt,
+      asset: item.asset,
+      marketSlug: item.marketSlug,
+      side: item.side,
+      requestedStake: item.requestedStake,
+      reasonCode: item.reasonCode,
+      reason: item.reason,
+      quotedPrice: item.quotedPrice,
+      bookVisible: item.bookVisible,
+    }, cwd);
+  }
+}
+
 function isFatalPaperLoopError(error: unknown): boolean {
   return error instanceof Error && error.name === 'RealtimeConnectionExhaustedError';
 }
@@ -527,6 +550,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
   const strategy = registry.getById(strategyId);
   const strategyParams = resolveStrategyParams(strategy.defaults, input.strategyParamOverrides);
   const state = resumePaperSessionState(input.sessionName, input.cwd, { startingCash: input.startingCash });
+  const attemptedEntryMarkets: Partial<Record<PaperSessionAsset, string>> = {};
 
   let cyclesCompleted = 0;
   let openedCount = 0;
@@ -556,6 +580,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         const settledThisCycle: SettlePaperPositionResult[] = [];
         const closedThisCycle: ClosePaperPositionResult[] = [];
         const openedThisCycle: OpenPaperPositionResult[] = [];
+        const rejectedOpenThisCycle: RejectedOpenPaperPositionResult[] = [];
         const openMarks: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
         const decisionSummaries: PaperCycleDecisionSummary[] = [];
         const asset = snapshot.asset;
@@ -588,11 +613,23 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         if (!snapshot.closed) {
           const context = buildStrategyContextForSnapshot(state, snapshot, state.history, latestSnapshotsByAsset, cycleTimestamp);
           const decision = strategy.evaluate(context, structuredClone(strategyParams));
+          const repeatedEntryAttempt = (
+            decision.action === 'buy'
+            && !hasOpenPaperPosition(state.positions[asset])
+            && attemptedEntryMarkets[asset] === snapshot.slug
+          );
+
+          const summaryAction = repeatedEntryAttempt ? 'hold' : decision.action;
+          const summarySide = repeatedEntryAttempt ? 'flat' : (decision.side ?? 'flat');
+          const summaryReason = repeatedEntryAttempt
+            ? 'entry already attempted for this 5m market'
+            : decision.reason;
+
           decisionSummaries.push({
             asset,
-            action: decision.action,
-            side: decision.side ?? 'flat',
-            reason: decision.reason,
+            action: summaryAction,
+            side: summarySide,
+            reason: summaryReason,
             marketSlug: snapshot.slug,
             upPrice: snapshot.upPrice,
             downPrice: snapshot.downPrice,
@@ -600,7 +637,9 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             downAsk: snapshot.downAsk,
           });
 
-          appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
+          if (!repeatedEntryAttempt) {
+            appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
+          }
 
           if (decision.action === 'sell') {
             const livePosition = state.positions[asset];
@@ -613,14 +652,16 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
                 openMarks[asset] = snapshot;
               }
             }
-          } else {
-            const opened = openPaperPosition(state, asset, snapshot, decision, feeModel, cycleTimestamp);
-            if (opened) {
+          } else if (decision.action === 'buy' && !repeatedEntryAttempt) {
+            attemptedEntryMarkets[asset] = snapshot.slug;
+            const attempt = resolveOpenPaperPositionAttempt(state, asset, snapshot, decision, feeModel);
+            if ('reasonCode' in attempt) {
+              rejectedOpenThisCycle.push(attempt);
+            } else {
+              const opened = applyOpenPaperPositionAttempt(state, snapshot, attempt, cycleTimestamp);
               openedThisCycle.push(opened);
               openMarks[asset] = snapshot;
               openedCount += 1;
-            } else if (hasOpenPaperPosition(state.positions[asset])) {
-              openMarks[asset] = snapshot;
             }
           }
         }
@@ -663,6 +704,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         appendSettlementEvents(input.sessionName, settledThisCycle, input.cwd);
         appendCloseEvents(input.sessionName, closedThisCycle, input.cwd);
         appendOpenEvents(input.sessionName, openedThisCycle, input.cwd);
+        appendRejectedOpenEvents(input.sessionName, rejectedOpenThisCycle, input.cwd);
         appendPaperSessionEvent(input.sessionName, {
           type: 'paper-cycle-complete',
           timestamp: cycleTimestamp,
@@ -739,6 +781,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
       const settledThisCycle: SettlePaperPositionResult[] = [];
       const closedThisCycle: ClosePaperPositionResult[] = [];
       const openedThisCycle: OpenPaperPositionResult[] = [];
+      const rejectedOpenThisCycle: RejectedOpenPaperPositionResult[] = [];
       const openMarks: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
       const decisionSummaries: PaperCycleDecisionSummary[] = [];
 
@@ -773,11 +816,17 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         const snapshot = snapshotsByAsset[asset];
         const context = buildStrategyContextForSnapshot(state, snapshot, state.history, snapshotsByAsset, cycleTimestamp);
         const decision = strategy.evaluate(context, structuredClone(strategyParams));
+        const repeatedEntryAttempt = (
+          decision.action === 'buy'
+          && !hasOpenPaperPosition(state.positions[asset])
+          && attemptedEntryMarkets[asset] === snapshot.slug
+        );
+
         decisionSummaries.push({
           asset,
-          action: decision.action,
-          side: decision.side ?? 'flat',
-          reason: decision.reason,
+          action: repeatedEntryAttempt ? 'hold' : decision.action,
+          side: repeatedEntryAttempt ? 'flat' : (decision.side ?? 'flat'),
+          reason: repeatedEntryAttempt ? 'entry already attempted for this 5m market' : decision.reason,
           marketSlug: snapshot.slug,
           upPrice: snapshot.upPrice,
           downPrice: snapshot.downPrice,
@@ -785,7 +834,9 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           downAsk: snapshot.downAsk,
         });
 
-        appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
+        if (!repeatedEntryAttempt) {
+          appendDecisionEvent(input.sessionName, asset, snapshot, decision, input.cwd);
+        }
 
         if (decision.action === 'sell') {
           const position = state.positions[asset];
@@ -801,14 +852,22 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           continue;
         }
 
-        const opened = openPaperPosition(state, asset, snapshot, decision, feeModel, cycleTimestamp);
-        if (!opened) {
-          if (hasOpenPaperPosition(state.positions[asset])) {
-            openMarks[asset] = snapshot;
-          }
+        if (repeatedEntryAttempt) {
           continue;
         }
 
+        if (decision.action !== 'buy') {
+          continue;
+        }
+
+        attemptedEntryMarkets[asset] = snapshot.slug;
+        const attempt = resolveOpenPaperPositionAttempt(state, asset, snapshot, decision, feeModel);
+        if ('reasonCode' in attempt) {
+          rejectedOpenThisCycle.push(attempt);
+          continue;
+        }
+
+        const opened = applyOpenPaperPositionAttempt(state, snapshot, attempt, cycleTimestamp);
         openedThisCycle.push(opened);
         openMarks[asset] = snapshot;
         openedCount += 1;
@@ -823,6 +882,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
       appendSettlementEvents(input.sessionName, settledThisCycle, input.cwd);
       appendCloseEvents(input.sessionName, closedThisCycle, input.cwd);
       appendOpenEvents(input.sessionName, openedThisCycle, input.cwd);
+      appendRejectedOpenEvents(input.sessionName, rejectedOpenThisCycle, input.cwd);
       appendPaperSessionEvent(input.sessionName, {
         type: 'paper-cycle-complete',
         timestamp: cycleTimestamp,

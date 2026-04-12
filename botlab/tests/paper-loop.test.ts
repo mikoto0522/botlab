@@ -137,6 +137,10 @@ function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSn
   const downPrice = input.downPrice ?? 0.5;
   const upAsk = input.upAsk ?? upPrice;
   const downAsk = input.downAsk ?? downPrice;
+  const bucketStartMs = Date.parse(input.bucketStartTime);
+  const defaultEndDate = Number.isFinite(bucketStartMs)
+    ? new Date(bucketStartMs + 300_000).toISOString()
+    : new Date((input.bucketStartEpoch + 300) * 1000).toISOString();
 
   return {
     ...(input as Record<string, unknown>),
@@ -147,7 +151,7 @@ function createSnapshot(input: Partial<PaperMarketSnapshot> & Pick<PaperMarketSn
     closed: input.closed ?? false,
     acceptingOrders: input.acceptingOrders ?? true,
     eventStartTime: input.eventStartTime ?? input.bucketStartTime,
-    endDate: input.endDate ?? new Date((input.bucketStartEpoch + 300) * 1000).toISOString(),
+    endDate: input.endDate ?? defaultEndDate,
     bucketStartTime: input.bucketStartTime,
     bucketStartEpoch: input.bucketStartEpoch,
     upPrice,
@@ -1065,6 +1069,64 @@ test('runPaperLoop reacts to a single-asset realtime signal without waiting for 
   assert.equal(state.tradeCount, 1);
   assert.equal(state.positions.ETH?.predictionSide, 'up');
   assert.equal(state.positions.BTC, undefined);
+});
+
+test('runPaperLoop only attempts one paper entry per 5m market and persists the rejection reason when that entry cannot be filled', async () => {
+  const { runPaperLoop } = await import('../paper/loop.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'botlab-paper-single-asset-reject-'));
+  const strategyDir = writeAssetPaperStrategy('BTC');
+  let waitForNextSignalCalls = 0;
+
+  await runPaperLoop({
+    sessionName: 'Paper Single Asset Reject Session',
+    strategyId: 'paper-btc-test',
+    strategyDir,
+    cwd,
+    intervalMs: 30_000,
+    maxCycles: 3,
+    sleepMs: async () => {
+      assert.fail('paper loop should not sleep when a realtime signal source is available');
+    },
+    marketSource: {
+      getCurrentSnapshots: async () => [],
+      waitForNextSignal: async () => {
+        waitForNextSignalCalls += 1;
+        return createSnapshot({
+          asset: 'BTC',
+          slug: 'btc-updown-5m-1711444500',
+          bucketStartTime: '2026-03-26T09:15:00.000Z',
+          bucketStartEpoch: 1711444500,
+          upPrice: 0.55,
+          downPrice: 0.45,
+          upAsk: 0.57,
+          downAsk: 0.47,
+          upOrderBook: {
+            bids: [{ price: 0.55, size: 30 }],
+            asks: [],
+          },
+          downOrderBook: {
+            bids: [{ price: 0.45, size: 30 }],
+            asks: [],
+          },
+          fetchedAt: `2026-03-26T09:15:1${waitForNextSignalCalls}.000Z`,
+        });
+      },
+      getSnapshotBySlug: async (slug) => {
+        assert.fail(`unexpected slug lookup for ${slug}`);
+      },
+    },
+  });
+
+  const state = loadPaperSessionState('Paper Single Asset Reject Session', cwd);
+  const { eventsPath } = resolvePaperSessionPaths(cwd, 'Paper Single Asset Reject Session');
+  const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  assert.equal(waitForNextSignalCalls, 3);
+  assert.equal(state.tradeCount, 0);
+  assert.equal(state.positions.BTC, undefined);
+  assert.equal(events.filter((event) => event.type === 'paper-strategy-decision').length, 1);
+  assert.equal(events.filter((event) => event.type === 'paper-position-open-rejected').length, 1);
+  assert.equal(events.find((event) => event.type === 'paper-position-open-rejected')?.reasonCode, 'no-visible-entry-liquidity');
 });
 
 test('runPaperLoop refreshes a stale realtime position snapshot after that bucket has expired', async () => {
