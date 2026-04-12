@@ -10,6 +10,12 @@
       "mediumConfidenceStake": 5,
       "highConfidenceStake": 5,
       "hedgeStakePerLeg": 5
+    },
+    "polybot-ported-v4-single-asset": {
+      "earlyStarterStake": 5,
+      "lowConfidenceStake": 5,
+      "mediumConfidenceStake": 5,
+      "highConfidenceStake": 5
     }
   }
 }

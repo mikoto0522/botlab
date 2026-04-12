@@ -314,6 +314,10 @@ function looksLikeReliableBinarySnapshot(snapshot: PaperMarketSnapshot): boolean
   return true;
 }
 
+export function isReliableRealtimeSnapshot(snapshot: PaperMarketSnapshot): boolean {
+  return looksLikeReliableBinarySnapshot(snapshot);
+}
+
 export async function loadDefaultWebSocketFactory(): Promise<RealtimeSocketFactory | null> {
   if (typeof WebSocket === 'function') {
     return (url: string) => new WebSocket(url) as unknown as RealtimeSocketLike;

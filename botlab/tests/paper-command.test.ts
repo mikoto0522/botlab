@@ -1,6 +1,42 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { BotlabConfig } from '../core/types.js';
+import { createLoopMarketSource } from '../commands/paper.js';
 import type { PaperMarketAsset, PaperMarketRef, PaperMarketSnapshot } from '../paper/market-source.js';
+
+function createConfig(): BotlabConfig {
+  return {
+    paths: {
+      rootDir: 'D:/Mikoto/botlab/botlab',
+      strategyDir: 'D:/Mikoto/botlab/botlab/strategies',
+      templateDir: 'D:/Mikoto/botlab/botlab/templates',
+      defaultConfigPath: 'D:/Mikoto/botlab/botlab/config/example.config.json',
+    },
+    runtime: {
+      mode: 'paper',
+      market: {
+        asset: 'BTC',
+        symbol: 'BTC-USD',
+        timeframe: '5m',
+        price: 100,
+        changePct24h: 0,
+        momentum: 0,
+        volume: 0,
+        timestamp: '2026-04-12T11:50:00.000Z',
+        candles: [],
+      },
+      position: {
+        side: 'flat',
+        size: 0,
+        entryPrice: null,
+      },
+      balance: 100,
+      clock: {
+        now: '2026-04-12T11:50:00.000Z',
+      },
+    },
+  };
+}
 
 function createSnapshot(
   asset: PaperMarketAsset,
@@ -38,32 +74,7 @@ function createSnapshot(
   };
 }
 
-test('assertRealtimeCompatibleLiveStrategy allows only single-asset realtime strategies', async () => {
-  const {
-    SUPPORTED_REALTIME_LIVE_STRATEGY_IDS,
-    assertRealtimeCompatibleLiveStrategy,
-  } = await import('../commands/live.js');
-
-  assert.deepEqual(
-    [...SUPPORTED_REALTIME_LIVE_STRATEGY_IDS].sort(),
-    ['btc-eth-5m', 'btc-eth-5m-aggressive', 'polybot-ported-v4-single-asset'],
-  );
-  assert.doesNotThrow(() => {
-    assertRealtimeCompatibleLiveStrategy('btc-eth-5m');
-  });
-  assert.doesNotThrow(() => {
-    assertRealtimeCompatibleLiveStrategy('btc-eth-5m-aggressive');
-  });
-  assert.doesNotThrow(() => {
-    assertRealtimeCompatibleLiveStrategy('polybot-ported-v4-single-asset');
-  });
-  assert.throws(() => {
-    assertRealtimeCompatibleLiveStrategy('polybot-ported');
-  }, /only supports btc-eth-5m, btc-eth-5m-aggressive, and polybot-ported-v4-single-asset/i);
-});
-
-test('createLoopMarketSource falls back to polling snapshots when realtime live prices are inconsistent', async () => {
-  const { createLoopMarketSource } = await import('../commands/live.js');
+test('createLoopMarketSource falls back to polling snapshots when realtime prices are inconsistent', async () => {
   const realtimeSnapshots = [
     createSnapshot('BTC', {
       upPrice: 0.01,
@@ -92,7 +103,7 @@ test('createLoopMarketSource falls back to polling snapshots when realtime live 
   ];
   let discoverCalls = 0;
 
-  const source = createLoopMarketSource('live-test', 'D:/Mikoto/botlab', {
+  const source = createLoopMarketSource(createConfig(), 'paper-test', 'D:/Mikoto/botlab', undefined, {
     createRealtimeSource: () => ({
       getLatestSnapshots: async () => realtimeSnapshots,
       waitForNextSignal: async () => realtimeSnapshots[0]!,
@@ -114,9 +125,6 @@ test('createLoopMarketSource falls back to polling snapshots when realtime live 
       }
       return match;
     },
-    fetchMarketDetail: async () => {
-      throw new Error('not needed');
-    },
   });
 
   try {
@@ -132,8 +140,7 @@ test('createLoopMarketSource falls back to polling snapshots when realtime live 
   }
 });
 
-test('createLoopMarketSource falls back to polling for inconsistent realtime live signals', async () => {
-  const { createLoopMarketSource } = await import('../commands/live.js');
+test('createLoopMarketSource falls back to polling for realtime single-asset signals with inconsistent prices', async () => {
   const realtimeSignal = createSnapshot('BTC', {
     upPrice: 0.01,
     downPrice: 0.07,
@@ -146,7 +153,7 @@ test('createLoopMarketSource falls back to polling for inconsistent realtime liv
     fetchedAt: '2026-04-12T11:50:12.000Z',
   });
 
-  const source = createLoopMarketSource('live-test', 'D:/Mikoto/botlab', {
+  const source = createLoopMarketSource(createConfig(), 'paper-test', 'D:/Mikoto/botlab', undefined, {
     createRealtimeSource: () => ({
       getLatestSnapshots: async () => [pollingSnapshot, createSnapshot('ETH')],
       waitForNextSignal: async () => realtimeSignal,
@@ -171,9 +178,6 @@ test('createLoopMarketSource falls back to polling for inconsistent realtime liv
         return pollingSnapshot;
       }
       return createSnapshot('ETH');
-    },
-    fetchMarketDetail: async () => {
-      throw new Error('not needed');
     },
   });
 

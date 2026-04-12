@@ -2,13 +2,17 @@ import path from 'node:path';
 import type { BotlabConfig } from '../core/types.js';
 import {
   createFixturePaperMarketSource,
+  discoverActivePaperMarketRefs,
   fetchPaperMarketSnapshot,
   type PaperMarketAsset,
   type PaperMarketRef,
   type PaperMarketSnapshot,
 } from '../paper/market-source.js';
 import {
+  createHybridPaperMarketSource,
   createRealtimePaperMarketSource,
+  isReliableRealtimeSnapshot,
+  type RealtimePaperMarketSource,
 } from '../paper/realtime-market-source.js';
 import { runPaperLoop, type PaperCycleReport } from '../paper/loop.js';
 import { appendPaperSessionEvent } from '../paper/session-store.js';
@@ -51,11 +55,18 @@ type LoopMarketSourceWithClose = {
   close: () => Promise<void>;
 };
 
-function createLoopMarketSource(
+interface PaperLoopMarketSourceDependencies {
+  createRealtimeSource?: (options: Parameters<typeof createRealtimePaperMarketSource>[0]) => RealtimePaperMarketSource;
+  discoverActiveRefs?: typeof discoverActivePaperMarketRefs;
+  fetchSnapshot?: typeof fetchPaperMarketSnapshot;
+}
+
+export function createLoopMarketSource(
   config: BotlabConfig,
   sessionName: string,
   cwd: string,
   fixturePath?: string,
+  dependencies: PaperLoopMarketSourceDependencies = {},
 ): LoopMarketSourceWithClose {
   if (fixturePath) {
     const resolvedFixturePath = resolveProjectRelativePath(config, fixturePath);
@@ -76,7 +87,10 @@ function createLoopMarketSource(
     };
   }
 
-  const realtimeSource = createRealtimePaperMarketSource({
+  const createRealtimeSource = dependencies.createRealtimeSource ?? createRealtimePaperMarketSource;
+  const discoverActiveRefs = dependencies.discoverActiveRefs ?? discoverActivePaperMarketRefs;
+  const fetchSnapshot = dependencies.fetchSnapshot ?? fetchPaperMarketSnapshot;
+  const realtimeSource = createRealtimeSource({
     reconnectDelayMs: 5_000,
     maxReconnectAttempts: 5,
     fatalOnReconnectExhausted: true,
@@ -86,18 +100,33 @@ function createLoopMarketSource(
       },
     }),
   });
+  const hybridSource = createHybridPaperMarketSource({
+    pollingSource: {
+      getCurrentSnapshots: async (): Promise<PaperMarketSnapshot[]> => {
+        const refs = await discoverActiveRefs();
+        return Promise.all(refs.map((ref) => fetchSnapshot(ref)));
+      },
+      getSnapshotBySlug: async (slug: string, asset: PaperMarketAsset): Promise<PaperMarketSnapshot> => {
+        return fetchSnapshot(buildRefFromSlug(asset, slug));
+      },
+    },
+    realtimeSource,
+  });
 
   return {
-    getCurrentSnapshots: () => realtimeSource.getLatestSnapshots(),
-    getSnapshotBySlug: async (slug: string, asset: PaperMarketAsset): Promise<PaperMarketSnapshot> => {
-      return fetchPaperMarketSnapshot(buildRefFromSlug(asset, slug));
-    },
-    waitForNextSignal: (afterTimestamp: string, timeoutMs: number) => {
+    getCurrentSnapshots: () => hybridSource.getCurrentSnapshots(),
+    getSnapshotBySlug: hybridSource.getSnapshotBySlug,
+    waitForNextSignal: async (afterTimestamp: string, timeoutMs: number) => {
       if (!realtimeSource.waitForNextSignal) {
         throw new Error('Realtime paper source does not support single-asset signal waits.');
       }
 
-      return realtimeSource.waitForNextSignal(afterTimestamp, timeoutMs);
+      const snapshot = await realtimeSource.waitForNextSignal(afterTimestamp, timeoutMs);
+      if (isReliableRealtimeSnapshot(snapshot)) {
+        return snapshot;
+      }
+
+      return fetchSnapshot(buildRefFromSlug(snapshot.asset, snapshot.slug));
     },
     close: () => realtimeSource.close(),
   };

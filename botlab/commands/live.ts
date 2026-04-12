@@ -10,7 +10,10 @@ import {
   type PaperMarketSnapshot,
 } from '../paper/market-source.js';
 import {
+  createHybridPaperMarketSource,
   createRealtimePaperMarketSource,
+  isReliableRealtimeSnapshot,
+  type RealtimePaperMarketSource,
 } from '../paper/realtime-market-source.js';
 import { createQuietCycleLogger, createRealtimeConnectionReporter } from './realtime-logging.js';
 import { formatBacktestNumber } from './backtest-common.js';
@@ -76,9 +79,24 @@ export type LoopMarketSourceWithClose = {
   ) => Promise<PaperMarketSnapshot>;
 };
 
-export function createLoopMarketSource(sessionName?: string, cwd?: string): LoopMarketSourceWithClose {
+interface LiveLoopMarketSourceDependencies {
+  createRealtimeSource?: (options: Parameters<typeof createRealtimePaperMarketSource>[0]) => RealtimePaperMarketSource;
+  discoverActiveRefs?: typeof discoverActivePaperMarketRefs;
+  fetchSnapshot?: typeof fetchPaperMarketSnapshot;
+  fetchMarketDetail?: typeof fetchPaperMarketDetail;
+}
+
+export function createLoopMarketSource(
+  sessionName?: string,
+  cwd?: string,
+  dependencies: LiveLoopMarketSourceDependencies = {},
+): LoopMarketSourceWithClose {
   const marketDetailCache = new Map<string, Awaited<ReturnType<typeof fetchPaperMarketDetail>>>();
   const currentSnapshots = new Map<string, PaperMarketSnapshot>();
+  const createRealtimeSource = dependencies.createRealtimeSource ?? createRealtimePaperMarketSource;
+  const discoverActiveRefs = dependencies.discoverActiveRefs ?? discoverActivePaperMarketRefs;
+  const fetchSnapshot = dependencies.fetchSnapshot ?? fetchPaperMarketSnapshot;
+  const fetchMarketDetailImpl = dependencies.fetchMarketDetail ?? fetchPaperMarketDetail;
 
   function toCacheKey(asset: PaperMarketAsset, slug: string): string {
     return `${asset}:${slug}`;
@@ -98,7 +116,7 @@ export function createLoopMarketSource(sessionName?: string, cwd?: string): Loop
     return Boolean(bids && bids.length > 0);
   }
 
-  const realtimeSource = createRealtimePaperMarketSource({
+  const realtimeSource = createRealtimeSource({
     reconnectDelayMs: 5_000,
     maxReconnectAttempts: 5,
     fatalOnReconnectExhausted: true,
@@ -110,9 +128,21 @@ export function createLoopMarketSource(sessionName?: string, cwd?: string): Loop
       },
     }),
   });
+  const hybridSource = createHybridPaperMarketSource({
+    pollingSource: {
+      getCurrentSnapshots: async (): Promise<PaperMarketSnapshot[]> => {
+        const refs = await discoverActiveRefs();
+        return Promise.all(refs.map((ref) => fetchSnapshot(ref)));
+      },
+      getSnapshotBySlug: async (slug: string, asset: PaperMarketAsset): Promise<PaperMarketSnapshot> => {
+        return fetchSnapshot(buildRefFromSlug(asset, slug));
+      },
+    },
+    realtimeSource,
+  });
 
   const getCurrentSnapshots = async () => {
-    const snapshots = await realtimeSource.getLatestSnapshots();
+    const snapshots = await hybridSource.getCurrentSnapshots();
     for (const snapshot of snapshots) {
       currentSnapshots.set(toCacheKey(snapshot.asset, snapshot.slug), snapshot);
     }
@@ -120,7 +150,7 @@ export function createLoopMarketSource(sessionName?: string, cwd?: string): Loop
   };
 
   const getSnapshotBySlug = async (slug: string, asset: PaperMarketAsset): Promise<PaperMarketSnapshot> => {
-    return fetchPaperMarketSnapshot(buildRefFromSlug(asset, slug));
+    return hybridSource.getSnapshotBySlug(slug, asset);
   };
 
   const waitForNextSignal = async (afterTimestamp: string, timeoutMs: number): Promise<PaperMarketSnapshot> => {
@@ -128,8 +158,11 @@ export function createLoopMarketSource(sessionName?: string, cwd?: string): Loop
     if (!snapshot) {
       throw new Error('Realtime live loop expected a realtime signal but none arrived.');
     }
-    currentSnapshots.set(toCacheKey(snapshot.asset, snapshot.slug), snapshot);
-    return snapshot;
+    const resolvedSnapshot = isReliableRealtimeSnapshot(snapshot)
+      ? snapshot
+      : await fetchSnapshot(buildRefFromSlug(snapshot.asset, snapshot.slug));
+    currentSnapshots.set(toCacheKey(resolvedSnapshot.asset, resolvedSnapshot.slug), resolvedSnapshot);
+    return resolvedSnapshot;
   };
 
   return {
@@ -152,10 +185,10 @@ export function createLoopMarketSource(sessionName?: string, cwd?: string): Loop
         return cachedDetail;
       }
 
-      const activeRefs = await discoverActivePaperMarketRefs();
+      const activeRefs = await discoverActiveRefs();
       const activeRef = activeRefs.find((ref) => ref.slug === slug && ref.asset === asset);
       const marketRef = activeRef ?? buildRefFromSlug(asset, slug);
-      const detail = await fetchPaperMarketDetail(marketRef);
+      const detail = await fetchMarketDetailImpl(marketRef);
       marketDetailCache.set(cacheKey, detail);
       return detail;
     },
