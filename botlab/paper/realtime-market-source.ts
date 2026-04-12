@@ -664,6 +664,7 @@ export function createRealtimePaperMarketSource(
   let socket: RealtimeSocketLike | null = null;
   let pingTimer: NodeJS.Timeout | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  const intentionallyClosingSockets = new WeakSet<RealtimeSocketLike>();
   let closed = false;
   let currentSignature = '';
   let refreshPromise: Promise<void> | null = null;
@@ -815,18 +816,25 @@ export function createRealtimePaperMarketSource(
     signalWaiters = remaining;
   }
 
-  function clearSocketResources(): void {
+  function clearPingTimer(): void {
     if (pingTimer) {
       clearInterval(pingTimer);
       pingTimer = null;
     }
+  }
+
+  function clearSocketResources(): void {
+    clearPingTimer();
     if (socket) {
+      const socketToClose = socket;
+      socket = null;
+      intentionallyClosingSockets.add(socketToClose);
       try {
-        socket.close();
+        socketToClose.close();
       } catch {
+        intentionallyClosingSockets.delete(socketToClose);
         // Ignore close failures while reconnecting.
       }
-      socket = null;
     }
   }
 
@@ -955,7 +963,17 @@ export function createRealtimePaperMarketSource(
     nextSocket.addEventListener('message', handleSocketMessage);
     nextSocket.addEventListener('error', scheduleReconnect);
     nextSocket.addEventListener('close', () => {
-      clearSocketResources();
+      const intentionalClose = intentionallyClosingSockets.has(nextSocket);
+      intentionallyClosingSockets.delete(nextSocket);
+      if (intentionalClose) {
+        return;
+      }
+
+      if (socket === nextSocket) {
+        socket = null;
+        clearPingTimer();
+      }
+
       scheduleReconnect();
     });
   }

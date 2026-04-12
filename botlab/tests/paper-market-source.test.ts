@@ -1587,6 +1587,208 @@ test('realtime paper market source derives a sane display pair from book midpoin
   assert.equal(snapshots[1]?.downPrice, 0.5);
 });
 
+test('realtime paper market source does not schedule a reconnect when it intentionally rolls to the next market bucket', async () => {
+  let socketCount = 0;
+  let marketsFetchCount = 0;
+  let currentTime = new Date('2026-03-29T10:53:27.000Z');
+  const connectionEvents: string[] = [];
+
+  class FakeWebSocket {
+    public static readonly OPEN = 1;
+    public static readonly CLOSED = 3;
+    public readyState = FakeWebSocket.OPEN;
+    private closed = false;
+    private readonly listeners: Record<string, Array<(event?: { data?: unknown }) => void>> = {
+      open: [],
+      close: [],
+      error: [],
+      message: [],
+    };
+
+    constructor() {
+      socketCount += 1;
+      setTimeout(() => this.emit('open'), 0);
+    }
+
+    addEventListener(type: 'open' | 'close' | 'error', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(
+      type: 'open' | 'close' | 'error' | 'message',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      this.listeners[type].push(listener as (event?: { data?: unknown }) => void);
+    }
+
+    send(data: string): void {
+      if (!data.startsWith('{')) {
+        return;
+      }
+
+      const parsed = JSON.parse(data) as { assets_ids?: string[]; type?: string };
+      if (parsed.type !== 'market') {
+        return;
+      }
+
+      setTimeout(() => {
+        this.emit('message', {
+          data: JSON.stringify((parsed.assets_ids ?? []).map((assetId) => {
+            if (assetId === 'btc-up-token') {
+              return {
+                event_type: 'book',
+                asset_id: assetId,
+                timestamp: currentTime.toISOString(),
+                bids: [{ price: '0.52', size: '100' }],
+                asks: [{ price: '0.54', size: '100' }],
+                last_trade_price: '0.53',
+              };
+            }
+
+            if (assetId === 'btc-down-token') {
+              return {
+                event_type: 'book',
+                asset_id: assetId,
+                timestamp: currentTime.toISOString(),
+                bids: [{ price: '0.46', size: '100' }],
+                asks: [{ price: '0.48', size: '100' }],
+                last_trade_price: '0.47',
+              };
+            }
+
+            if (assetId === 'eth-up-token') {
+              return {
+                event_type: 'book',
+                asset_id: assetId,
+                timestamp: currentTime.toISOString(),
+                bids: [{ price: '0.49', size: '100' }],
+                asks: [{ price: '0.51', size: '100' }],
+                last_trade_price: '0.50',
+              };
+            }
+
+            return {
+              event_type: 'book',
+              asset_id: assetId,
+              timestamp: currentTime.toISOString(),
+              bids: [{ price: '0.49', size: '100' }],
+              asks: [{ price: '0.51', size: '100' }],
+              last_trade_price: '0.50',
+            };
+          })),
+        });
+      }, 0);
+    }
+
+    close(): void {
+      if (this.closed) {
+        return;
+      }
+
+      this.closed = true;
+      this.readyState = FakeWebSocket.CLOSED;
+      setTimeout(() => this.emit('close'), 0);
+    }
+
+    private emit(type: 'open' | 'close' | 'error' | 'message', event?: { data?: unknown }) {
+      for (const listener of this.listeners[type]) {
+        listener(event);
+      }
+    }
+  }
+
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets')) {
+      marketsFetchCount += 1;
+      const bucketStart = marketsFetchCount === 1 ? 1774781400 : 1774781700;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            slug: `btc-updown-5m-${bucketStart}`,
+            active: true,
+            closed: false,
+          },
+          {
+            slug: `eth-updown-5m-${bucketStart}`,
+            active: true,
+            closed: false,
+          },
+        ]),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400') || url.endsWith('/markets/slug/btc-updown-5m-1774781700')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: url.endsWith('1774781700') ? 'btc-updown-5m-1774781700' : 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          eventStartTime: currentTime.toISOString(),
+          endDate: new Date(currentTime.getTime() + (5 * 60 * 1000)).toISOString(),
+          volume: 25000,
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/eth-updown-5m-1774781400') || url.endsWith('/markets/slug/eth-updown-5m-1774781700')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: url.endsWith('1774781700') ? 'eth-updown-5m-1774781700' : 'eth-updown-5m-1774781400',
+          question: 'Ethereum Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['eth-up-token', 'eth-down-token'],
+          eventStartTime: currentTime.toISOString(),
+          endDate: new Date(currentTime.getTime() + (5 * 60 * 1000)).toISOString(),
+          volume: 26000,
+        }),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+
+  const realtimeSource = createRealtimePaperMarketSource({
+    fetchImpl: fakeFetch,
+    websocketFactory: () => new FakeWebSocket(),
+    onConnectionEvent: (event) => connectionEvents.push(event.type),
+    now: () => currentTime,
+    initialWaitMs: 50,
+    reconnectDelayMs: 1,
+  });
+
+  try {
+    const initialSnapshots = await realtimeSource.getLatestSnapshots();
+    assert.equal(initialSnapshots.length, 2);
+
+    currentTime = new Date('2026-03-29T10:55:01.000Z');
+    const rolledSnapshots = await realtimeSource.getLatestSnapshots();
+    assert.equal(rolledSnapshots.length, 2);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(socketCount, 2);
+    assert.deepEqual(connectionEvents, ['connected', 'reconnected']);
+  } finally {
+    await realtimeSource.close();
+  }
+});
+
 test('realtime paper market source degrades cleanly when websocket support is unavailable', async () => {
   const webSocketGlobal = globalThis as unknown as { WebSocket?: unknown };
   const originalWebSocket = webSocketGlobal.WebSocket;
