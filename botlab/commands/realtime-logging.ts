@@ -22,6 +22,7 @@ interface CycleReport {
   closedCount: number;
   settledCount: number;
   decisions?: DecisionSummary[];
+  snapshots?: Partial<Record<'BTC' | 'ETH', Record<string, unknown>>>;
   errorMessage?: string;
 }
 
@@ -67,6 +68,24 @@ function formatDecisionSummary(report: DecisionSummary): string {
   return `${report.asset}${marketSlug} ${report.action}${side} (${prices})`;
 }
 
+function formatHeartbeatSnapshot(
+  asset: 'BTC' | 'ETH',
+  snapshot: Record<string, unknown> | undefined,
+): string | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  const upPrice = typeof snapshot.upPrice === 'number' && Number.isFinite(snapshot.upPrice)
+    ? formatBacktestNumber(snapshot.upPrice)
+    : 'n/a';
+  const downPrice = typeof snapshot.downPrice === 'number' && Number.isFinite(snapshot.downPrice)
+    ? formatBacktestNumber(snapshot.downPrice)
+    : 'n/a';
+
+  return `${asset} up=${upPrice} down=${downPrice}`;
+}
+
 export function createQuietCycleLogger(
   mode: 'paper' | 'live',
   options: CycleLoggerOptions = {},
@@ -94,8 +113,12 @@ export function createQuietCycleLogger(
       if (Number.isFinite(reportTimestampMs)) {
         lastHeartbeatAtMs = reportTimestampMs;
       }
+      const snapshotSummary = (['BTC', 'ETH'] as const)
+        .map((asset) => formatHeartbeatSnapshot(asset, report.snapshots?.[asset]))
+        .filter((entry): entry is string => entry !== null)
+        .join(' | ');
       write(
-        `[${report.timestamp}] ${mode} heartbeat: connected | cycles=${report.cycleCount} cash=${formatBacktestNumber(report.cash)} equity=${formatBacktestNumber(report.equity)}`,
+        `[${report.timestamp}] ${mode} heartbeat: connected | cycles=${report.cycleCount} cash=${formatBacktestNumber(report.cash)} equity=${formatBacktestNumber(report.equity)}${snapshotSummary ? ` | ${snapshotSummary}` : ''}`,
       );
     }
   };

@@ -20,6 +20,20 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
     openedCount: 0,
     closedCount: 0,
     settledCount: 0,
+    snapshots: {
+      BTC: {
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1775921400',
+        upPrice: 0.67,
+        downPrice: 0.24,
+      },
+      ETH: {
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1775921400',
+        upPrice: 0.58,
+        downPrice: 0.42,
+      },
+    },
     decisions: [{
       asset: 'BTC',
       action: 'hold',
@@ -41,6 +55,20 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
     openedCount: 0,
     closedCount: 0,
     settledCount: 0,
+    snapshots: {
+      BTC: {
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1775921400',
+        upPrice: 0.66,
+        downPrice: 0.25,
+      },
+      ETH: {
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1775921400',
+        upPrice: 0.57,
+        downPrice: 0.43,
+      },
+    },
     decisions: [{
       asset: 'BTC',
       action: 'hold',
@@ -62,6 +90,20 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
     openedCount: 0,
     closedCount: 0,
     settledCount: 0,
+    snapshots: {
+      BTC: {
+        asset: 'BTC',
+        slug: 'btc-updown-5m-1775921400',
+        upPrice: 0.65,
+        downPrice: 0.26,
+      },
+      ETH: {
+        asset: 'ETH',
+        slug: 'eth-updown-5m-1775921400',
+        upPrice: 0.56,
+        downPrice: 0.44,
+      },
+    },
     decisions: [{
       asset: 'BTC',
       action: 'hold',
@@ -108,8 +150,8 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
   });
 
   assert.deepEqual(lines, [
-    '[2026-04-11T15:30:00.000Z] paper heartbeat: connected | cycles=1 cash=100.00 equity=100.00',
-    '[2026-04-11T15:31:10.000Z] paper heartbeat: connected | cycles=3 cash=100.00 equity=100.00',
+    '[2026-04-11T15:30:00.000Z] paper heartbeat: connected | cycles=1 cash=100.00 equity=100.00 | BTC up=0.67 down=0.24 | ETH up=0.58 down=0.42',
+    '[2026-04-11T15:31:10.000Z] paper heartbeat: connected | cycles=3 cash=100.00 equity=100.00 | BTC up=0.65 down=0.26 | ETH up=0.56 down=0.44',
     '[2026-04-11T15:31:11.000Z] cycle 4: BTC btc-updown-5m-1775921400 buy up (price up=0.41 down=0.59) | opened=1 closed=0 settled=0 | cash=88.00 equity=88.50',
     '[2026-04-11T15:31:12.000Z] cycle 5: skipped (temporary disconnect)',
   ]);
