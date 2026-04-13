@@ -161,3 +161,22 @@ test('shared order-book guard uses one default slippage rule for buy and sell', 
   assert.equal(guardBuyExecution(buyPreview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT), null);
   assert.equal(guardSellExecution(sellPreview, DEFAULT_MAX_PRICE_SLIPPAGE_PCT), null);
 });
+
+test('shared order-book preview sorts scrambled asks before buying through multiple levels', () => {
+  const preview = previewBuyExecution(createSnapshot({
+    downOrderBook: {
+      bids: [{ price: 0.48, size: 50 }],
+      asks: [
+        { price: 0.99, size: 5.04 },
+        { price: 0.67, size: 0.01 },
+        { price: 0.72, size: 10 },
+      ],
+    },
+    downAsk: 0.99,
+  }), 'down', 5, 'polymarket-2026-03-26');
+
+  assert.ok(preview);
+  assert.equal(preview.fills[0]?.price, 0.67);
+  assert.equal(preview.fills[1]?.price, 0.72);
+  assert.equal(preview.quotedPrice, 0.67);
+});

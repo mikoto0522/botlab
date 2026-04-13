@@ -4,6 +4,7 @@ import {
   type PaperMarketAsset,
   type PaperMarketDetail,
   type PaperOrderBookLevel,
+  sortPaperOrderBookLevels,
   type PaperMarketSnapshot,
 } from './market-source.js';
 
@@ -226,24 +227,7 @@ function toIsoString(value: number | string | Date | undefined): string {
   return new Date().toISOString();
 }
 
-function readBookLevelPrice(levels: unknown): number | null {
-  if (!Array.isArray(levels) || levels.length === 0) {
-    return null;
-  }
-
-  const first = levels[0];
-  if (Array.isArray(first)) {
-    return normalizeBinaryPrice(coerceNumber(first[0]));
-  }
-
-  if (typeof first === 'object' && first !== null) {
-    return normalizeBinaryPrice(coerceNumber((first as Record<string, unknown>).price));
-  }
-
-  return normalizeBinaryPrice(coerceNumber(first));
-}
-
-function readOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
+function readOrderBookLevels(levels: unknown, side: 'bids' | 'asks'): PaperOrderBookLevel[] {
   if (!Array.isArray(levels)) {
     return [];
   }
@@ -271,7 +255,7 @@ function readOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
     }
   }
 
-  return normalized;
+  return sortPaperOrderBookLevels(normalized, side);
 }
 
 function createTokenState(
@@ -571,16 +555,19 @@ function handleBookPayload(
     return published;
   }
 
+  const bids = readOrderBookLevels(payload.bids, 'bids');
+  const asks = readOrderBookLevels(payload.asks, 'asks');
+
   const next = updateTokenState(tokenStates, tokenId, {
+    bids,
+    asks,
     price: selectRealtimeDisplayPrice(
-      readBookLevelPrice(payload.bids),
-      readBookLevelPrice(payload.asks),
+      bids[0]?.price ?? null,
+      asks[0]?.price ?? null,
       normalizeBinaryPrice(coerceNumber(payload.last_trade_price)),
     ),
-    bestBid: readBookLevelPrice(payload.bids),
-    bestAsk: readBookLevelPrice(payload.asks),
-    bids: readOrderBookLevels(payload.bids),
-    asks: readOrderBookLevels(payload.asks),
+    bestBid: bids[0]?.price ?? null,
+    bestAsk: asks[0]?.price ?? null,
     fetchedAt: toIsoString(typeof payload.timestamp === 'string' ? payload.timestamp : undefined),
   }, metadataByTokenId);
 

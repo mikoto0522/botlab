@@ -454,6 +454,100 @@ test('fetchPaperMarketSnapshot enriches the snapshot with full order book depth 
   });
 });
 
+test('fetchPaperMarketSnapshot sorts scrambled order book levels before attaching them to the snapshot', async () => {
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down - March 29, 10:50AM-10:55AM UTC',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          endDate: '2026-03-29T10:55:00.000Z',
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          outcomePrices: '["0.52","0.48"]',
+          bestAsk: '["0.53","0.49"]',
+          fetchedAt: '2026-03-29T10:53:27.000Z',
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/books')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          {
+            asset_id: 'btc-up-token',
+            bids: [
+              { price: '0.49', size: '8' },
+              { price: '0.51', size: '12.5' },
+            ],
+            asks: [
+              { price: '0.55', size: '4' },
+              { price: '0.53', size: '8' },
+            ],
+          },
+          {
+            asset_id: 'btc-down-token',
+            bids: [
+              { price: '0.45', size: '9' },
+              { price: '0.47', size: '11' },
+            ],
+            asks: [
+              { price: '0.52', size: '7' },
+              { price: '0.49', size: '5' },
+            ],
+          },
+        ]),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  }) as typeof fetch;
+
+  const snapshot = await fetchPaperMarketSnapshot(
+    {
+      asset: 'BTC',
+      slug: 'btc-updown-5m-1774781400',
+      bucketStartTime: '2026-03-29T10:50:00.000Z',
+      bucketStartEpoch: 1774781400,
+    },
+    {
+      fetchImpl: fakeFetch,
+      now: '2026-03-29T10:53:27.000Z',
+    },
+  );
+
+  assert.equal(snapshot.upAsk, 0.53);
+  assert.equal(snapshot.downAsk, 0.49);
+  assert.deepEqual(snapshot.upOrderBook?.bids, [
+    { price: 0.51, size: 12.5 },
+    { price: 0.49, size: 8 },
+  ]);
+  assert.deepEqual(snapshot.upOrderBook?.asks, [
+    { price: 0.53, size: 8 },
+    { price: 0.55, size: 4 },
+  ]);
+  assert.deepEqual(snapshot.downOrderBook?.bids, [
+    { price: 0.47, size: 11 },
+    { price: 0.45, size: 9 },
+  ]);
+  assert.deepEqual(snapshot.downOrderBook?.asks, [
+    { price: 0.49, size: 5 },
+    { price: 0.52, size: 7 },
+  ]);
+});
+
 test('fetchPaperMarketSnapshot prefers the latest real trade from the order book feed when the market snapshot is stale', async () => {
   const fakeFetch: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -1423,6 +1517,187 @@ test('realtime paper market source normalizes websocket updates into live snapsh
   assert.equal(snapshots[1]?.asset, 'ETH');
   assert.equal(snapshots[1]?.upPrice, 0.5);
   assert.equal(snapshots[1]?.downPrice, 0.5);
+});
+
+test('realtime paper market source sorts scrambled websocket order books before publishing snapshots', async () => {
+  class FakeWebSocket {
+    public static readonly OPEN = 1;
+    public readyState = FakeWebSocket.OPEN;
+    private readonly listeners: Record<string, Array<(event?: { data?: unknown }) => void>> = {
+      open: [],
+      close: [],
+      error: [],
+      message: [],
+    };
+
+    constructor() {
+      setTimeout(() => this.emit('open'), 0);
+    }
+
+    addEventListener(type: 'open' | 'close' | 'error', listener: () => void): void;
+    addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+    addEventListener(
+      type: 'open' | 'close' | 'error' | 'message',
+      listener: (() => void) | ((event: { data: unknown }) => void),
+    ): void {
+      this.listeners[type].push(listener as (event?: { data?: unknown }) => void);
+    }
+
+    send(data: string): void {
+      if (!data.startsWith('{')) {
+        return;
+      }
+
+      setTimeout(() => {
+        this.emit('message', {
+          data: JSON.stringify([
+            {
+              event_type: 'book',
+              asset_id: 'btc-up-token',
+              timestamp: '2026-03-29T10:53:27.000Z',
+              bids: [
+                { price: '0.49', size: '80' },
+                { price: '0.52', size: '100' },
+              ],
+              asks: [
+                { price: '0.58', size: '100' },
+                { price: '0.54', size: '100' },
+              ],
+              last_trade_price: '0.53',
+            },
+            {
+              event_type: 'book',
+              asset_id: 'btc-down-token',
+              timestamp: '2026-03-29T10:53:27.000Z',
+              bids: [
+                { price: '0.42', size: '90' },
+                { price: '0.46', size: '100' },
+              ],
+              asks: [
+                { price: '0.52', size: '100' },
+                { price: '0.48', size: '100' },
+              ],
+              last_trade_price: '0.47',
+            },
+            {
+              event_type: 'book',
+              asset_id: 'eth-up-token',
+              timestamp: '2026-03-29T10:53:27.000Z',
+              bids: [{ price: '0.49', size: '100' }],
+              asks: [{ price: '0.51', size: '100' }],
+              last_trade_price: '0.50',
+            },
+            {
+              event_type: 'book',
+              asset_id: 'eth-down-token',
+              timestamp: '2026-03-29T10:53:27.000Z',
+              bids: [{ price: '0.49', size: '100' }],
+              asks: [{ price: '0.51', size: '100' }],
+              last_trade_price: '0.50',
+            },
+          ]),
+        });
+      }, 0);
+    }
+
+    close(): void {
+      this.emit('close');
+    }
+
+    private emit(type: 'open' | 'close' | 'error' | 'message', event?: { data?: unknown }) {
+      for (const listener of this.listeners[type]) {
+        listener(event);
+      }
+    }
+  }
+
+  const fakeFetch: typeof fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+
+    if (url.endsWith('/markets')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ([
+          { slug: 'btc-updown-5m-1774781400', active: true, closed: false },
+          { slug: 'eth-updown-5m-1774781400', active: true, closed: false },
+        ]),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/btc-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'btc-updown-5m-1774781400',
+          question: 'Bitcoin Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['btc-up-token', 'btc-down-token'],
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          volume: 25000,
+        }),
+      } as Response;
+    }
+
+    if (url.endsWith('/markets/slug/eth-updown-5m-1774781400')) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          slug: 'eth-updown-5m-1774781400',
+          question: 'Ethereum Up or Down',
+          active: true,
+          closed: false,
+          acceptingOrders: true,
+          outcomes: ['Up', 'Down'],
+          clobTokenIds: ['eth-up-token', 'eth-down-token'],
+          eventStartTime: '2026-03-29T10:50:00.000Z',
+          endDate: '2026-03-29T10:55:00.000Z',
+          volume: 26000,
+        }),
+      } as Response;
+    }
+
+    throw new Error(`Unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+
+  const realtimeSource = createRealtimePaperMarketSource({
+    fetchImpl: fakeFetch,
+    websocketFactory: () => new FakeWebSocket(),
+    now: () => new Date('2026-03-29T10:53:27.000Z'),
+    initialWaitMs: 50,
+  });
+
+  const snapshots = await realtimeSource.getLatestSnapshots();
+  await realtimeSource.close();
+
+  assert.equal(snapshots[0]?.asset, 'BTC');
+  assert.equal(snapshots[0]?.upAsk, 0.54);
+  assert.equal(snapshots[0]?.downAsk, 0.48);
+  assert.deepEqual(snapshots[0]?.upOrderBook?.bids, [
+    { price: 0.52, size: 100 },
+    { price: 0.49, size: 80 },
+  ]);
+  assert.deepEqual(snapshots[0]?.upOrderBook?.asks, [
+    { price: 0.54, size: 100 },
+    { price: 0.58, size: 100 },
+  ]);
+  assert.deepEqual(snapshots[0]?.downOrderBook?.bids, [
+    { price: 0.46, size: 100 },
+    { price: 0.42, size: 90 },
+  ]);
+  assert.deepEqual(snapshots[0]?.downOrderBook?.asks, [
+    { price: 0.48, size: 100 },
+    { price: 0.52, size: 100 },
+  ]);
 });
 
 test('realtime paper market source derives a sane display pair from book midpoints when raw trade prices are clearly stale', async () => {

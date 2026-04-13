@@ -7,6 +7,8 @@ export interface PaperOrderBookLevel {
   size: number;
 }
 
+export type PaperOrderBookSide = 'bids' | 'asks';
+
 export interface PaperOutcomeOrderBook {
   bids: PaperOrderBookLevel[];
   asks: PaperOrderBookLevel[];
@@ -491,7 +493,23 @@ async function requestJsonRecordWithInit(
   return parsed as Record<string, unknown>;
 }
 
-function normalizeOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
+export function sortPaperOrderBookLevels(
+  levels: PaperOrderBookLevel[],
+  side: PaperOrderBookSide,
+): PaperOrderBookLevel[] {
+  const direction = side === 'asks' ? 1 : -1;
+
+  return [...levels].sort((left, right) => {
+    const priceDelta = (left.price - right.price) * direction;
+    if (Math.abs(priceDelta) > 1e-9) {
+      return priceDelta;
+    }
+
+    return right.size - left.size;
+  });
+}
+
+function normalizeOrderBookLevels(levels: unknown, side: PaperOrderBookSide): PaperOrderBookLevel[] {
   if (!Array.isArray(levels)) {
     return [];
   }
@@ -511,7 +529,7 @@ function normalizeOrderBookLevels(levels: unknown): PaperOrderBookLevel[] {
     normalized.push({ price, size });
   }
 
-  return normalized;
+  return sortPaperOrderBookLevels(normalized, side);
 }
 
 function normalizeOptionalBinaryPrice(value: unknown): number | null {
@@ -611,15 +629,15 @@ async function fetchPaperOrderBooks(
   return {
     upOrderBook: upBookRow
       ? {
-          bids: normalizeOrderBookLevels(upBookRow.bids),
-          asks: normalizeOrderBookLevels(upBookRow.asks),
+          bids: normalizeOrderBookLevels(upBookRow.bids, 'bids'),
+          asks: normalizeOrderBookLevels(upBookRow.asks, 'asks'),
           lastTradePrice: normalizeOptionalBinaryPrice(upBookRow.last_trade_price),
         }
       : undefined,
     downOrderBook: downBookRow
       ? {
-          bids: normalizeOrderBookLevels(downBookRow.bids),
-          asks: normalizeOrderBookLevels(downBookRow.asks),
+          bids: normalizeOrderBookLevels(downBookRow.bids, 'bids'),
+          asks: normalizeOrderBookLevels(downBookRow.asks, 'asks'),
           lastTradePrice: normalizeOptionalBinaryPrice(downBookRow.last_trade_price),
         }
       : undefined,

@@ -1,5 +1,9 @@
 import { calculateFee, type BacktestFeeModel } from '../backtest/fees.js';
-import type { PaperMarketSnapshot, PaperOrderBookLevel } from '../paper/market-source.js';
+import {
+  sortPaperOrderBookLevels,
+  type PaperMarketSnapshot,
+  type PaperOrderBookLevel,
+} from '../paper/market-source.js';
 
 export type OutcomeSide = 'up' | 'down';
 
@@ -71,7 +75,9 @@ function getExitPrice(snapshot: PaperMarketSnapshot, side: OutcomeSide): number 
 
 export function readBestOutcomeAsk(snapshot: PaperMarketSnapshot, side: OutcomeSide): number | null {
   const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
-  const orderBookAsk = orderBook?.asks[0]?.price;
+  const orderBookAsk = orderBook && orderBook.asks.length > 0
+    ? sortPaperOrderBookLevels(orderBook.asks, 'asks')[0]?.price
+    : null;
   if (isFinitePositiveNumber(orderBookAsk)) {
     return orderBookAsk;
   }
@@ -113,10 +119,11 @@ function getEntryLiquidityLevels(
 
   const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
   if (orderBook && orderBook.asks.length > 0) {
+    const sortedAsks = sortPaperOrderBookLevels(orderBook.asks, 'asks');
     return {
-      levels: orderBook.asks,
+      levels: sortedAsks,
       depthVisible: true,
-      quotedPrice: readBestOutcomeAsk(snapshot, side),
+      quotedPrice: sortedAsks[0]?.price ?? readBestOutcomeAsk(snapshot, side),
     };
   }
 
@@ -131,10 +138,11 @@ function getEntryLiquidityLevels(
 function getExitLiquidityLevels(snapshot: PaperMarketSnapshot, side: OutcomeSide): LiquidityLevels {
   const orderBook = side === 'up' ? snapshot.upOrderBook : snapshot.downOrderBook;
   if (orderBook && orderBook.bids.length > 0) {
+    const sortedBids = sortPaperOrderBookLevels(orderBook.bids, 'bids');
     return {
-      levels: orderBook.bids,
+      levels: sortedBids,
       depthVisible: true,
-      quotedPrice: orderBook.bids[0]?.price ?? null,
+      quotedPrice: sortedBids[0]?.price ?? null,
     };
   }
 
