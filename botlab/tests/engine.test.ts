@@ -1698,11 +1698,11 @@ test('polybot port v3 still allows a very strong confirmed move even when the wi
   assert.ok((result.decision.size ?? 0) >= 12);
 });
 
-test('polybot port v4 single asset opens a starter entry inside the preferred 90-to-120 second window', async () => {
+test('polybot port v4 single asset opens a starter ETH entry inside the preferred 90-to-120 second window', async () => {
   const result = await loadPolybotPortedV4SingleAssetResult({
     market: {
-      asset: 'BTC',
-      symbol: 'BTC-USD-5M',
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
       timeframe: '5m',
       price: 0.265,
       upPrice: 0.265,
@@ -1734,8 +1734,8 @@ test('polybot port v4 single asset opens a starter entry inside the preferred 90
 test('polybot port v4 single asset can enter before the preferred window when the signal is strong enough', async () => {
   const result = await loadPolybotPortedV4SingleAssetResult({
     market: {
-      asset: 'BTC',
-      symbol: 'BTC-USD-5M',
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
       timeframe: '5m',
       price: 0.31,
       upPrice: 0.31,
@@ -1767,8 +1767,8 @@ test('polybot port v4 single asset can enter before the preferred window when th
 test('polybot port v4 single asset skips a marginal starter setup in the final seconds instead of chasing it', async () => {
   const result = await loadPolybotPortedV4SingleAssetResult({
     market: {
-      asset: 'BTC',
-      symbol: 'BTC-USD-5M',
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
       timeframe: '5m',
       price: 0.31,
       upPrice: 0.31,
@@ -1793,6 +1793,99 @@ test('polybot port v4 single asset skips a marginal starter setup in the final s
 
   assert.equal(result.decision.action, 'hold');
   assert.match(result.decision.reason, /late|window|chasing/i);
+});
+
+test('polybot port v4 single asset skips BTC continuation setups after BTC underperformed in paper logs', async () => {
+  const result = await loadPolybotPortedV4SingleAssetResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.31,
+      upPrice: 0.31,
+      downPrice: 0.69,
+      upAsk: 0.32,
+      downAsk: 0.7,
+      volume: 1500,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.21, high: 0.24, low: 0.2, close: 0.23, volume: 1080 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.23, high: 0.25, low: 0.22, close: 0.245, volume: 1160 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.245, high: 0.27, low: 0.24, close: 0.26, volume: 1250 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.26, high: 0.285, low: 0.255, close: 0.278, volume: 1330 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.278, high: 0.302, low: 0.274, close: 0.294, volume: 1410 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.294, high: 0.314, low: 0.29, close: 0.31, volume: 1500 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:32:20.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'hold');
+  assert.match(result.decision.reason, /btc|disabled|eth/i);
+});
+
+test('polybot port v4 single asset skips BTC reversion setups after BTC underperformed in paper logs', async () => {
+  const result = await loadPolybotPortedV4SingleAssetResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.16,
+      upPrice: 0.16,
+      downPrice: 0.84,
+      upAsk: 0.17,
+      downAsk: 0.85,
+      volume: 1400,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.34, high: 0.35, low: 0.3, close: 0.31, volume: 1050 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.31, high: 0.32, low: 0.26, close: 0.27, volume: 1120 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.27, high: 0.28, low: 0.21, close: 0.22, volume: 1210 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.22, high: 0.23, low: 0.14, close: 0.15, volume: 1300 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.15, high: 0.17, low: 0.11, close: 0.12, volume: 1360 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.12, high: 0.18, low: 0.11, close: 0.16, volume: 1400 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:33:05.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'hold');
+  assert.match(result.decision.reason, /btc|disabled|eth/i);
+});
+
+test('polybot port v4 single asset skips mushy ETH confirmed continuation in the middle band', async () => {
+  const result = await loadPolybotPortedV4SingleAssetResult({
+    market: {
+      asset: 'ETH',
+      symbol: 'ETH-USD-5M',
+      timeframe: '5m',
+      price: 0.52,
+      upPrice: 0.52,
+      downPrice: 0.48,
+      upAsk: 0.53,
+      downAsk: 0.49,
+      volume: 1500,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.35, high: 0.39, low: 0.34, close: 0.38, volume: 1080 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.38, high: 0.42, low: 0.37, close: 0.41, volume: 1160 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.41, high: 0.45, low: 0.4, close: 0.44, volume: 1250 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.44, high: 0.48, low: 0.43, close: 0.47, volume: 1330 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.47, high: 0.5, low: 0.46, close: 0.5, volume: 1410 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.5, high: 0.53, low: 0.49, close: 0.52, volume: 1500 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:33:10.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'hold');
+  assert.match(result.decision.reason, /price|middle|zone|worth/i);
 });
 
 test('extreme reversal buys up after an extreme low quote turns and ETH confirms', async () => {

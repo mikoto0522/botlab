@@ -8,6 +8,7 @@ import type {
 interface PolybotPortedV4SingleAssetParams extends Record<string, unknown> {
   lookbackCandles: number;
   minimumVolume: number;
+  allowBtcTrades: boolean;
   earlyContinuationAlignmentMin: number;
   earlyContinuationMoveMin: number;
   preferredWindowContinuationAlignmentMin: number;
@@ -30,6 +31,8 @@ interface PolybotPortedV4SingleAssetParams extends Record<string, unknown> {
   lateEntryGuardSeconds: number;
   veryLateEntryGuardSeconds: number;
   veryLateConfirmedScoreBump: number;
+  ethConfirmedMidBandMinPrice: number;
+  ethConfirmedMidBandMaxPrice: number;
   earlyStarterStake: number;
   lowConfidenceStake: number;
   mediumConfidenceStake: number;
@@ -350,6 +353,36 @@ function chooseConfirmedStake(
   return Number(Math.min(balance, requested).toFixed(2));
 }
 
+function blocksAsset(
+  summary: MarketSummary,
+  params: PolybotPortedV4SingleAssetParams,
+): string | undefined {
+  if (summary.asset === 'BTC' && !params.allowBtcTrades) {
+    return 'BTC setups are disabled for this strategy until that side proves it can hold up in paper trading';
+  }
+
+  return undefined;
+}
+
+function blocksEntryZone(
+  summary: MarketSummary,
+  candidate: SignalCandidate,
+  entryPrice: number,
+  params: PolybotPortedV4SingleAssetParams,
+): string | undefined {
+  if (
+    summary.asset === 'ETH'
+    && candidate.family === 'continuation'
+    && candidate.tier === 'confirmed'
+    && entryPrice >= params.ethConfirmedMidBandMinPrice
+    && entryPrice <= params.ethConfirmedMidBandMaxPrice
+  ) {
+    return 'ETH continuation in the middle band stayed too whippy in paper trading, so the strategy now waits for a cleaner edge';
+  }
+
+  return undefined;
+}
+
 function evaluatePortedStrategyV4SingleAsset(
   context: BotlabStrategyContext,
   params: PolybotPortedV4SingleAssetParams,
@@ -376,6 +409,15 @@ function evaluatePortedStrategyV4SingleAsset(
       action: 'hold',
       reason: 'market context is too thin or too short',
       tags: ['polybot-ported-v4-single-asset', 'idle'],
+    };
+  }
+
+  const assetBlockReason = blocksAsset(summary, params);
+  if (assetBlockReason) {
+    return {
+      action: 'hold',
+      reason: assetBlockReason,
+      tags: ['polybot-ported-v4-single-asset', 'idle', 'asset-filter'],
     };
   }
 
@@ -408,6 +450,15 @@ function evaluatePortedStrategyV4SingleAsset(
     return left.tier === 'confirmed' ? -1 : 1;
   })[0]!;
   const entryPrice = best.side === 'up' ? summary.quotedUp : summary.quotedDown;
+
+  const entryZoneBlockReason = blocksEntryZone(summary, best, entryPrice, params);
+  if (entryZoneBlockReason) {
+    return {
+      action: 'hold',
+      reason: entryZoneBlockReason,
+      tags: ['polybot-ported-v4-single-asset', 'idle', 'price-filter', 'asset-filter'],
+    };
+  }
 
   if (entryPrice < params.minEntryPrice || entryPrice > params.maxEntryPrice) {
     return {
@@ -506,6 +557,7 @@ export const strategy: BotlabStrategyDefinition<PolybotPortedV4SingleAssetParams
   defaults: {
     lookbackCandles: 6,
     minimumVolume: 750,
+    allowBtcTrades: false,
     earlyContinuationAlignmentMin: 0.55,
     earlyContinuationMoveMin: 0.03,
     preferredWindowContinuationAlignmentMin: 0.5,
@@ -528,6 +580,8 @@ export const strategy: BotlabStrategyDefinition<PolybotPortedV4SingleAssetParams
     lateEntryGuardSeconds: 60,
     veryLateEntryGuardSeconds: 30,
     veryLateConfirmedScoreBump: 0.2,
+    ethConfirmedMidBandMinPrice: 0.45,
+    ethConfirmedMidBandMaxPrice: 0.535,
     earlyStarterStake: 6,
     lowConfidenceStake: 8,
     mediumConfidenceStake: 12,
