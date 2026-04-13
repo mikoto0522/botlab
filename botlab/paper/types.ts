@@ -6,6 +6,16 @@ export type PaperSessionPositionSide = 'flat' | 'long' | 'short';
 
 export type PaperSessionPredictionSide = 'up' | 'down';
 
+export interface PaperDecisionReview {
+  setup: string;
+  timing: string;
+  entryBucket: string;
+  volumeBucket: string;
+  quotedSidePrice: number | null;
+}
+
+export type PaperTradeOutcome = 'win' | 'loss' | 'flat';
+
 export interface PaperSessionPosition {
   asset?: PaperSessionAsset;
   side: PaperSessionPositionSide;
@@ -19,6 +29,9 @@ export interface PaperSessionPosition {
   openedAt?: string;
   bucketStartTime?: string;
   endDate?: string | null;
+  entryReason?: string;
+  entryTags?: string[];
+  review?: PaperDecisionReview;
 }
 
 export interface PaperSessionHistoryPoint {

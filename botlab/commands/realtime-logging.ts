@@ -10,6 +10,30 @@ interface DecisionSummary {
   downPrice: number | null;
   upAsk: number | null;
   downAsk: number | null;
+  review?: {
+    setup: string;
+    timing: string;
+    entryBucket: string;
+    volumeBucket: string;
+    quotedSidePrice: number | null;
+  };
+}
+
+interface RejectionSummary {
+  asset: string;
+  side: string;
+  marketSlug: string;
+  reasonCode: string;
+  reason: string;
+  quotedPrice: number | null;
+  bookVisible: boolean;
+  review?: {
+    setup: string;
+    timing: string;
+    entryBucket: string;
+    volumeBucket: string;
+    quotedSidePrice: number | null;
+  };
 }
 
 interface CycleReport {
@@ -21,7 +45,9 @@ interface CycleReport {
   openedCount: number;
   closedCount: number;
   settledCount: number;
+  rejectedCount?: number;
   decisions?: DecisionSummary[];
+  rejections?: RejectionSummary[];
   snapshots?: Partial<Record<'BTC' | 'ETH', Record<string, unknown>>>;
   errorMessage?: string;
 }
@@ -64,8 +90,32 @@ function formatDecisionSummary(report: DecisionSummary): string {
   const prices = `price up=${report.upPrice ?? 'n/a'} down=${report.downPrice ?? 'n/a'}`;
   const marketSlug = report.marketSlug ? ` ${report.marketSlug}` : '';
   const side = report.side === 'flat' ? '' : ` ${report.side ?? ''}`;
+  const review = formatReviewSummary(report.review);
 
-  return `${report.asset}${marketSlug} ${report.action}${side} (${prices})`;
+  return `${report.asset}${marketSlug} ${report.action}${side} (${prices})${review}`;
+}
+
+function formatReviewSummary(
+  review: DecisionSummary['review'] | RejectionSummary['review'] | undefined,
+): string {
+  if (!review) {
+    return '';
+  }
+
+  const quote = review.quotedSidePrice === null || review.quotedSidePrice === undefined
+    ? 'n/a'
+    : formatBacktestNumber(review.quotedSidePrice);
+  return ` [setup=${review.setup} timing=${review.timing} entry=${review.entryBucket} volume=${review.volumeBucket} quote=${quote}]`;
+}
+
+function formatRejectionSummary(report: RejectionSummary): string {
+  const marketSlug = report.marketSlug ? ` ${report.marketSlug}` : '';
+  const quote = report.quotedPrice === null || report.quotedPrice === undefined
+    ? 'n/a'
+    : formatBacktestNumber(report.quotedPrice);
+  const bookVisibility = report.bookVisible ? 'visible' : 'hidden';
+
+  return `${report.asset}${marketSlug} blocked ${report.side} (${report.reasonCode}, quote=${quote}, book=${bookVisibility})${formatReviewSummary(report.review)}`;
 }
 
 function formatHeartbeatSnapshot(
@@ -100,10 +150,12 @@ export function createQuietCycleLogger(
       return;
     }
 
-    if (report.openedCount > 0 || report.closedCount > 0 || report.settledCount > 0) {
-      const decisions = (report.decisions ?? []).map(formatDecisionSummary).join(' | ');
+    if (report.openedCount > 0 || report.closedCount > 0 || report.settledCount > 0 || (report.rejectedCount ?? 0) > 0) {
+      const decisions = (report.decisions ?? []).map(formatDecisionSummary);
+      const rejections = (report.rejections ?? []).map(formatRejectionSummary);
+      const activity = [...decisions, ...rejections].join(' | ');
       write(
-        `[${report.timestamp}] cycle ${report.cycleCount}: ${decisions || 'no decisions'} | opened=${report.openedCount} closed=${report.closedCount} settled=${report.settledCount} | cash=${formatBacktestNumber(report.cash)} equity=${formatBacktestNumber(report.equity)}`,
+        `[${report.timestamp}] cycle ${report.cycleCount}: ${activity || 'no decisions'} | opened=${report.openedCount} closed=${report.closedCount} settled=${report.settledCount} rejected=${report.rejectedCount ?? 0} | cash=${formatBacktestNumber(report.cash)} equity=${formatBacktestNumber(report.equity)}`,
       );
       return;
     }

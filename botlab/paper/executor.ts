@@ -10,10 +10,12 @@ import {
 } from '../execution/order-book.js';
 import type { PaperMarketSnapshot } from './market-source.js';
 import type {
+  PaperDecisionReview,
   PaperSessionAsset,
   PaperSessionPosition,
   PaperSessionPredictionSide,
   PaperSessionState,
+  PaperTradeOutcome,
 } from './types.js';
 
 export type PaperExecutionFillLevel = ExecutionFillLevel;
@@ -34,6 +36,9 @@ export interface OpenPaperPositionResult {
   quotedPrice: number | null;
   fills: PaperExecutionFillLevel[];
   openedAt: string;
+  reason?: string;
+  tags?: string[];
+  review?: PaperDecisionReview;
   position: PaperSessionPosition;
 }
 
@@ -53,6 +58,9 @@ export interface RejectedOpenPaperPositionResult {
   reason: string;
   quotedPrice: number | null;
   bookVisible: boolean;
+  decisionReason?: string;
+  decisionTags?: string[];
+  review?: PaperDecisionReview;
 }
 
 interface ResolvedOpenPaperPositionAttempt {
@@ -76,6 +84,10 @@ export interface SettlePaperPositionResult {
   proceeds: number;
   realizedPnl: number;
   settledAt: string;
+  entryReason?: string;
+  entryTags?: string[];
+  review?: PaperDecisionReview;
+  outcome: PaperTradeOutcome;
 }
 
 export interface ClosePaperPositionResult {
@@ -96,6 +108,16 @@ export interface ClosePaperPositionResult {
   levelsConsumed: number;
   fills: PaperExecutionFillLevel[];
   closedAt: string;
+  entryReason?: string;
+  entryTags?: string[];
+  review?: PaperDecisionReview;
+  outcome: PaperTradeOutcome;
+}
+
+interface PaperEntryMetadata {
+  reason?: string;
+  tags?: string[];
+  review?: PaperDecisionReview;
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -257,6 +279,7 @@ export function applyOpenPaperPositionAttempt(
   snapshot: PaperMarketSnapshot,
   attempt: ResolvedOpenPaperPositionAttempt,
   openedAt = snapshot.fetchedAt,
+  metadata: PaperEntryMetadata = {},
 ): OpenPaperPositionResult {
   const { asset, side, requestedStake, execution } = attempt;
 
@@ -273,6 +296,9 @@ export function applyOpenPaperPositionAttempt(
     openedAt,
     bucketStartTime: snapshot.bucketStartTime,
     endDate: snapshot.endDate,
+    entryReason: metadata.reason,
+    entryTags: metadata.tags ? [...metadata.tags] : undefined,
+    review: metadata.review ? { ...metadata.review } : undefined,
   };
 
   state.cash -= execution.totalCost;
@@ -295,8 +321,22 @@ export function applyOpenPaperPositionAttempt(
     quotedPrice: execution.quotedPrice,
     fills: execution.fills,
     openedAt,
+    reason: position.entryReason,
+    tags: position.entryTags ? [...position.entryTags] : undefined,
+    review: position.review ? { ...position.review } : undefined,
     position,
   };
+}
+
+function toTradeOutcome(realizedPnl: number): PaperTradeOutcome {
+  if (realizedPnl > 1e-9) {
+    return 'win';
+  }
+  if (realizedPnl < -1e-9) {
+    return 'loss';
+  }
+
+  return 'flat';
 }
 
 function getMarkExitLiquidityLevels(
@@ -445,6 +485,10 @@ export function settlePaperPosition(
     proceeds,
     realizedPnl,
     settledAt,
+    entryReason: position.entryReason,
+    entryTags: position.entryTags ? [...position.entryTags] : undefined,
+    review: position.review ? { ...position.review } : undefined,
+    outcome: toTradeOutcome(realizedPnl),
   };
 }
 
@@ -511,5 +555,9 @@ export function closePaperPosition(
     levelsConsumed: execution.levelsConsumed,
     fills: execution.fills,
     closedAt,
+    entryReason: position.entryReason,
+    entryTags: position.entryTags ? [...position.entryTags] : undefined,
+    review: position.review ? { ...position.review } : undefined,
+    outcome: toTradeOutcome(realizedPnl),
   };
 }

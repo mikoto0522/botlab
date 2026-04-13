@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import {
   PAPER_SESSION_HISTORY_LIMIT,
   PAPER_SESSION_STARTING_CASH,
+  type PaperDecisionReview,
   type PaperSessionEvent,
   type PaperSessionAsset,
   type PaperSessionHistoryMap,
@@ -58,6 +59,51 @@ function readOptionalNullableString(
   }
 
   return value;
+}
+
+function readOptionalStringArray(
+  value: unknown,
+  sessionName: string,
+  statePath: string,
+  fieldPath: string,
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((item) => !isString(item))) {
+    throw createSessionLoadError(sessionName, statePath, `${fieldPath} must be an array of non-empty strings when provided`);
+  }
+
+  return value.map((item) => item.trim());
+}
+
+function readOptionalReview(
+  value: unknown,
+  sessionName: string,
+  statePath: string,
+  fieldPath: string,
+): PaperDecisionReview | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw createSessionLoadError(sessionName, statePath, `${fieldPath} must be an object when provided`);
+  }
+
+  if (!isString(value.setup) || !isString(value.timing) || !isString(value.entryBucket) || !isString(value.volumeBucket)) {
+    throw createSessionLoadError(sessionName, statePath, `${fieldPath} must include non-empty setup, timing, entryBucket, and volumeBucket strings`);
+  }
+  if (!(value.quotedSidePrice === null || isFiniteNumber(value.quotedSidePrice))) {
+    throw createSessionLoadError(sessionName, statePath, `${fieldPath}.quotedSidePrice must be a finite number or null`);
+  }
+
+  return {
+    setup: value.setup,
+    timing: value.timing,
+    entryBucket: value.entryBucket,
+    volumeBucket: value.volumeBucket,
+    quotedSidePrice: value.quotedSidePrice as number | null,
+  };
 }
 
 function createSessionLoadError(sessionName: string, statePath: string, reason: string): Error {
@@ -119,6 +165,10 @@ function readPosition(value: unknown, sessionName: string, statePath: string, as
     throw createSessionLoadError(sessionName, statePath, `positions.${asset}.entryFee must be a finite number when provided`);
   }
 
+  const entryReason = readOptionalString(value.entryReason, sessionName, statePath, `positions.${asset}.entryReason`);
+  const entryTags = readOptionalStringArray(value.entryTags, sessionName, statePath, `positions.${asset}.entryTags`);
+  const review = readOptionalReview(value.review, sessionName, statePath, `positions.${asset}.review`);
+
   return {
     asset: (value.asset as PaperSessionAsset | undefined) ?? (asset as PaperSessionAsset),
     side: value.side,
@@ -132,6 +182,9 @@ function readPosition(value: unknown, sessionName: string, statePath: string, as
     openedAt: readOptionalString(value.openedAt, sessionName, statePath, `positions.${asset}.openedAt`),
     bucketStartTime: readOptionalString(value.bucketStartTime, sessionName, statePath, `positions.${asset}.bucketStartTime`),
     endDate: readOptionalNullableString(value.endDate, sessionName, statePath, `positions.${asset}.endDate`),
+    ...(entryReason === undefined ? {} : { entryReason }),
+    ...(entryTags === undefined ? {} : { entryTags }),
+    ...(review === undefined ? {} : { review }),
   };
 }
 
@@ -255,7 +308,8 @@ function shouldPersistPaperSessionEvent(event: PaperSessionEvent): boolean {
     const openedCount = typeof event.openedCount === 'number' ? event.openedCount : 0;
     const closedCount = typeof event.closedCount === 'number' ? event.closedCount : 0;
     const settledCount = typeof event.settledCount === 'number' ? event.settledCount : 0;
-    return openedCount > 0 || closedCount > 0 || settledCount > 0;
+    const rejectedCount = typeof event.rejectedCount === 'number' ? event.rejectedCount : 0;
+    return openedCount > 0 || closedCount > 0 || settledCount > 0 || rejectedCount > 0;
   }
 
   return true;

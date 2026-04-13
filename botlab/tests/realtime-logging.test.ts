@@ -135,12 +135,46 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
       downPrice: 0.59,
       upAsk: 0.42,
       downAsk: 0.6,
+      review: {
+        setup: 'continuation',
+        timing: 'confirmed',
+        entryBucket: '0.40-0.55',
+        volumeBucket: '250-1000',
+        quotedSidePrice: 0.42,
+      },
+    }],
+  });
+  logCycle({
+    type: 'cycle',
+    timestamp: '2026-04-11T15:31:20.000Z',
+    cycleCount: 5,
+    cash: 88,
+    equity: 88.5,
+    openedCount: 0,
+    closedCount: 0,
+    settledCount: 0,
+    rejectedCount: 1,
+    rejections: [{
+      asset: 'ETH',
+      side: 'down',
+      marketSlug: 'eth-updown-5m-1775921400',
+      reasonCode: 'entry-could-not-be-filled',
+      reason: 'Visible asks could not fill the requested paper entry.',
+      quotedPrice: 0.47,
+      bookVisible: true,
+      review: {
+        setup: 'reversion',
+        timing: 'late',
+        entryBucket: '0.40-0.55',
+        volumeBucket: '100-250',
+        quotedSidePrice: 0.47,
+      },
     }],
   });
   logCycle({
     type: 'error',
-    timestamp: '2026-04-11T15:31:12.000Z',
-    cycleCount: 5,
+    timestamp: '2026-04-11T15:31:21.000Z',
+    cycleCount: 6,
     cash: 88,
     equity: 88.5,
     openedCount: 0,
@@ -152,8 +186,9 @@ test('quiet cycle logger only prints low-frequency heartbeats but still prints t
   assert.deepEqual(lines, [
     '[2026-04-11T15:30:00.000Z] paper heartbeat: connected | cycles=1 cash=100.00 equity=100.00 | BTC up=0.67 down=0.24 | ETH up=0.58 down=0.42',
     '[2026-04-11T15:31:10.000Z] paper heartbeat: connected | cycles=3 cash=100.00 equity=100.00 | BTC up=0.65 down=0.26 | ETH up=0.56 down=0.44',
-    '[2026-04-11T15:31:11.000Z] cycle 4: BTC btc-updown-5m-1775921400 buy up (price up=0.41 down=0.59) | opened=1 closed=0 settled=0 | cash=88.00 equity=88.50',
-    '[2026-04-11T15:31:12.000Z] cycle 5: skipped (temporary disconnect)',
+    '[2026-04-11T15:31:11.000Z] cycle 4: BTC btc-updown-5m-1775921400 buy up (price up=0.41 down=0.59) [setup=continuation timing=confirmed entry=0.40-0.55 volume=250-1000 quote=0.42] | opened=1 closed=0 settled=0 rejected=0 | cash=88.00 equity=88.50',
+    '[2026-04-11T15:31:20.000Z] cycle 5: ETH eth-updown-5m-1775921400 blocked down (entry-could-not-be-filled, quote=0.47, book=visible) [setup=reversion timing=late entry=0.40-0.55 volume=100-250 quote=0.47] | opened=0 closed=0 settled=0 rejected=1 | cash=88.00 equity=88.50',
+    '[2026-04-11T15:31:21.000Z] cycle 6: skipped (temporary disconnect)',
   ]);
 });
 

@@ -28,6 +28,7 @@ import {
 } from './session-store.js';
 import {
   PAPER_SYNTHETIC_CANDLE_VOLUME,
+  type PaperDecisionReview,
   type PaperSessionAsset,
   type PaperSessionHistoryMap,
   type PaperSessionPosition,
@@ -77,6 +78,18 @@ export interface PaperCycleDecisionSummary {
   downPrice: number | null;
   upAsk: number | null;
   downAsk: number | null;
+  review?: PaperDecisionReview;
+}
+
+export interface PaperCycleRejectionSummary {
+  asset: PaperSessionAsset;
+  side: 'up' | 'down';
+  marketSlug: string;
+  reasonCode: string;
+  reason: string;
+  quotedPrice: number | null;
+  bookVisible: boolean;
+  review?: PaperDecisionReview;
 }
 
 export interface PaperCycleReport {
@@ -88,7 +101,9 @@ export interface PaperCycleReport {
   openedCount: number;
   closedCount: number;
   settledCount: number;
+  rejectedCount?: number;
   decisions?: PaperCycleDecisionSummary[];
+  rejections?: PaperCycleRejectionSummary[];
   snapshots?: Record<PaperSessionAsset, Record<string, unknown>>;
   errorMessage?: string;
 }
@@ -394,6 +409,121 @@ function summarizeSnapshot(snapshot: PaperMarketSnapshot): Record<string, unknow
   };
 }
 
+interface PaperDecisionEventMeta {
+  reason: string;
+  tags: string[];
+  review: PaperDecisionReview;
+}
+
+function getQuotedSidePrice(
+  snapshot: PaperMarketSnapshot,
+  side: BotlabStrategyDecision['side'] | 'flat' | undefined,
+): number | null {
+  if (side === 'up') {
+    return typeof snapshot.upAsk === 'number' && Number.isFinite(snapshot.upAsk)
+      ? snapshot.upAsk
+      : snapshot.upPrice;
+  }
+  if (side === 'down') {
+    return typeof snapshot.downAsk === 'number' && Number.isFinite(snapshot.downAsk)
+      ? snapshot.downAsk
+      : snapshot.downPrice;
+  }
+
+  return null;
+}
+
+function bucketEntryPrice(price: number | null): string {
+  if (typeof price !== 'number' || !Number.isFinite(price)) {
+    return 'unknown';
+  }
+  if (price < 0.12) {
+    return '<0.12';
+  }
+  if (price < 0.25) {
+    return '0.12-0.25';
+  }
+  if (price < 0.4) {
+    return '0.25-0.40';
+  }
+  if (price < 0.55) {
+    return '0.40-0.55';
+  }
+  if (price < 0.7) {
+    return '0.55-0.70';
+  }
+
+  return '>=0.70';
+}
+
+function bucketVolume(volume: number | null): string {
+  if (typeof volume !== 'number' || !Number.isFinite(volume)) {
+    return 'unknown';
+  }
+  if (volume < 25) {
+    return '<25';
+  }
+  if (volume < 100) {
+    return '25-100';
+  }
+  if (volume < 250) {
+    return '100-250';
+  }
+  if (volume < 1000) {
+    return '250-1000';
+  }
+
+  return '>=1000';
+}
+
+function classifySetup(tags: string[]): string {
+  if (tags.some((tag) => tag.includes('continuation'))) {
+    return 'continuation';
+  }
+  if (tags.some((tag) => tag.includes('reversion') || tag.includes('reversal'))) {
+    return 'reversion';
+  }
+
+  return 'unclassified';
+}
+
+function classifyTiming(tags: string[]): string {
+  if (tags.some((tag) => tag.includes('confirmed'))) {
+    return 'confirmed';
+  }
+  if (tags.some((tag) => tag.includes('late'))) {
+    return 'late';
+  }
+  if (tags.some((tag) => tag.includes('early') || tag.includes('pre-window'))) {
+    return 'early';
+  }
+  if (tags.some((tag) => tag.includes('preferred-window'))) {
+    return 'preferred';
+  }
+
+  return 'standard';
+}
+
+function buildDecisionEventMeta(
+  snapshot: PaperMarketSnapshot,
+  decision: Pick<BotlabStrategyDecision, 'reason' | 'tags' | 'side'>,
+): PaperDecisionEventMeta {
+  const tags = [...(decision.tags ?? [])];
+  const quotedSidePrice = getQuotedSidePrice(snapshot, decision.side ?? 'flat');
+
+  return {
+    reason: decision.reason,
+    tags,
+    review: {
+      setup: classifySetup(tags),
+      timing: classifyTiming(tags),
+      entryBucket: bucketEntryPrice(quotedSidePrice),
+      volumeBucket: bucketVolume(snapshot.volume),
+      quotedSidePrice,
+    },
+  };
+}
+
 function appendOpenEvents(
   sessionName: string,
   opened: OpenPaperPositionResult[],
@@ -417,6 +547,9 @@ function appendOpenEvents(
       bookVisible: item.bookVisible,
       quotedPrice: item.quotedPrice,
       fills: item.fills,
+      reason: item.reason,
+      tags: item.tags ?? [],
+      review: item.review,
     }, cwd);
   }
 }
@@ -443,6 +576,10 @@ function appendCloseEvents(
       partialFill: item.partialFill,
       levelsConsumed: item.levelsConsumed,
       fills: item.fills,
+      entryReason: item.entryReason,
+      entryTags: item.entryTags ?? [],
+      review: item.review,
+      outcome: item.outcome,
     }, cwd);
   }
 }
@@ -463,6 +600,7 @@ function appendDecisionEvent(
     size: decision.size ?? null,
     reason: decision.reason,
     tags: decision.tags ?? [],
+    review: buildDecisionEventMeta(snapshot, decision).review,
     snapshot: summarizeSnapshot(snapshot),
   }, cwd);
 }
@@ -497,6 +635,10 @@ function appendSettlementEvents(
       exitPrice: item.exitPrice,
       feesPaid: item.feesPaid,
       realizedPnl: item.realizedPnl,
+      entryReason: item.entryReason,
+      entryTags: item.entryTags ?? [],
+      review: item.review,
+      outcome: item.outcome,
     }, cwd);
   }
 }
@@ -518,6 +660,9 @@ function appendRejectedOpenEvents(
       reason: item.reason,
       quotedPrice: item.quotedPrice,
       bookVisible: item.bookVisible,
+      decisionReason: item.decisionReason,
+      decisionTags: item.decisionTags ?? [],
+      review: item.review,
     }, cwd);
   }
 }
@@ -583,6 +728,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         const rejectedOpenThisCycle: RejectedOpenPaperPositionResult[] = [];
         const openMarks: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
         const decisionSummaries: PaperCycleDecisionSummary[] = [];
+        const rejectionSummaries: PaperCycleRejectionSummary[] = [];
         const asset = snapshot.asset;
         const position = state.positions[asset];
 
@@ -613,6 +759,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         if (!snapshot.closed) {
           const context = buildStrategyContextForSnapshot(state, snapshot, state.history, latestSnapshotsByAsset, cycleTimestamp);
           const decision = strategy.evaluate(context, structuredClone(strategyParams));
+          const decisionMeta = buildDecisionEventMeta(snapshot, decision);
           const repeatedEntryAttempt = (
             decision.action === 'buy'
             && !hasOpenPaperPosition(state.positions[asset])
@@ -635,6 +782,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             downPrice: snapshot.downPrice,
             upAsk: snapshot.upAsk,
             downAsk: snapshot.downAsk,
+            review: decisionMeta.review,
           });
 
           if (!repeatedEntryAttempt) {
@@ -656,9 +804,25 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             attemptedEntryMarkets[asset] = snapshot.slug;
             const attempt = resolveOpenPaperPositionAttempt(state, asset, snapshot, decision, feeModel);
             if ('reasonCode' in attempt) {
-              rejectedOpenThisCycle.push(attempt);
+              const rejection = {
+                ...attempt,
+                decisionReason: decisionMeta.reason,
+                decisionTags: decisionMeta.tags,
+                review: decisionMeta.review,
+              } satisfies RejectedOpenPaperPositionResult;
+              rejectedOpenThisCycle.push(rejection);
+              rejectionSummaries.push({
+                asset: rejection.asset,
+                side: rejection.side,
+                marketSlug: rejection.marketSlug,
+                reasonCode: rejection.reasonCode,
+                reason: rejection.reason,
+                quotedPrice: rejection.quotedPrice,
+                bookVisible: rejection.bookVisible,
+                review: rejection.review,
+              });
             } else {
-              const opened = applyOpenPaperPositionAttempt(state, snapshot, attempt, cycleTimestamp);
+              const opened = applyOpenPaperPositionAttempt(state, snapshot, attempt, cycleTimestamp, decisionMeta);
               openedThisCycle.push(opened);
               openMarks[asset] = snapshot;
               openedCount += 1;
@@ -715,6 +879,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           openedCount: openedThisCycle.length,
           closedCount: closedThisCycle.length,
           settledCount: settledThisCycle.length,
+          rejectedCount: rejectedOpenThisCycle.length,
           snapshots: {
             BTC: latestSnapshotsByAsset.BTC ? summarizeSnapshot(latestSnapshotsByAsset.BTC) : undefined,
             ETH: latestSnapshotsByAsset.ETH ? summarizeSnapshot(latestSnapshotsByAsset.ETH) : undefined,
@@ -730,7 +895,9 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
             openedCount: openedThisCycle.length,
             closedCount: closedThisCycle.length,
             settledCount: settledThisCycle.length,
+            rejectedCount: rejectedOpenThisCycle.length,
             decisions: decisionSummaries,
+            rejections: rejectionSummaries,
             snapshots: {
               BTC: latestSnapshotsByAsset.BTC ? summarizeSnapshot(latestSnapshotsByAsset.BTC) : undefined,
               ETH: latestSnapshotsByAsset.ETH ? summarizeSnapshot(latestSnapshotsByAsset.ETH) : undefined,
@@ -784,6 +951,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
       const rejectedOpenThisCycle: RejectedOpenPaperPositionResult[] = [];
       const openMarks: Partial<Record<PaperSessionAsset, PaperMarketSnapshot>> = {};
       const decisionSummaries: PaperCycleDecisionSummary[] = [];
+      const rejectionSummaries: PaperCycleRejectionSummary[] = [];
 
       for (const asset of ['BTC', 'ETH'] as const) {
         const position = state.positions[asset];
@@ -816,6 +984,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         const snapshot = snapshotsByAsset[asset];
         const context = buildStrategyContextForSnapshot(state, snapshot, state.history, snapshotsByAsset, cycleTimestamp);
         const decision = strategy.evaluate(context, structuredClone(strategyParams));
+        const decisionMeta = buildDecisionEventMeta(snapshot, decision);
         const repeatedEntryAttempt = (
           decision.action === 'buy'
           && !hasOpenPaperPosition(state.positions[asset])
@@ -832,6 +1001,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           downPrice: snapshot.downPrice,
           upAsk: snapshot.upAsk,
           downAsk: snapshot.downAsk,
+          review: decisionMeta.review,
         });
 
         if (!repeatedEntryAttempt) {
@@ -863,11 +1033,27 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         attemptedEntryMarkets[asset] = snapshot.slug;
         const attempt = resolveOpenPaperPositionAttempt(state, asset, snapshot, decision, feeModel);
         if ('reasonCode' in attempt) {
-          rejectedOpenThisCycle.push(attempt);
+          const rejection = {
+            ...attempt,
+            decisionReason: decisionMeta.reason,
+            decisionTags: decisionMeta.tags,
+            review: decisionMeta.review,
+          } satisfies RejectedOpenPaperPositionResult;
+          rejectedOpenThisCycle.push(rejection);
+          rejectionSummaries.push({
+            asset: rejection.asset,
+            side: rejection.side,
+            marketSlug: rejection.marketSlug,
+            reasonCode: rejection.reasonCode,
+            reason: rejection.reason,
+            quotedPrice: rejection.quotedPrice,
+            bookVisible: rejection.bookVisible,
+            review: rejection.review,
+          });
           continue;
         }
 
-        const opened = applyOpenPaperPositionAttempt(state, snapshot, attempt, cycleTimestamp);
+        const opened = applyOpenPaperPositionAttempt(state, snapshot, attempt, cycleTimestamp, decisionMeta);
         openedThisCycle.push(opened);
         openMarks[asset] = snapshot;
         openedCount += 1;
@@ -893,6 +1079,7 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
         openedCount: openedThisCycle.length,
         closedCount: closedThisCycle.length,
         settledCount: settledThisCycle.length,
+        rejectedCount: rejectedOpenThisCycle.length,
         snapshots: {
           BTC: summarizeSnapshot(snapshotsByAsset.BTC),
           ETH: summarizeSnapshot(snapshotsByAsset.ETH),
@@ -908,7 +1095,9 @@ export async function runPaperLoop(input: RunPaperLoopInput): Promise<PaperLoopR
           openedCount: openedThisCycle.length,
           closedCount: closedThisCycle.length,
           settledCount: settledThisCycle.length,
+          rejectedCount: rejectedOpenThisCycle.length,
           decisions: decisionSummaries,
+          rejections: rejectionSummaries,
           snapshots: {
             BTC: summarizeSnapshot(snapshotsByAsset.BTC),
             ETH: summarizeSnapshot(snapshotsByAsset.ETH),

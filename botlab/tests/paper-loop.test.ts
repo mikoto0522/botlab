@@ -276,6 +276,22 @@ test('runPaperLoop respects maxCycles, updates same-bucket history in place, and
   assert.equal(events[0]?.type, 'paper-strategy-decision');
   assert.equal(events[1]?.type, 'paper-position-opened');
   assert.equal(events[2]?.type, 'paper-cycle-complete');
+  assert.deepEqual(events[0]?.review, {
+    setup: 'unclassified',
+    timing: 'standard',
+    entryBucket: '0.40-0.55',
+    volumeBucket: '>=1000',
+    quotedSidePrice: 0.42,
+  });
+  assert.equal(events[1]?.reason, 'open first BTC bucket');
+  assert.deepEqual(events[1]?.tags, []);
+  assert.deepEqual(events[1]?.review, {
+    setup: 'unclassified',
+    timing: 'standard',
+    entryBucket: '0.40-0.55',
+    volumeBucket: '>=1000',
+    quotedSidePrice: 0.42,
+  });
 });
 
 test('runPaperLoop resumes a stored position and settles it when the saved market closes', async () => {
@@ -411,6 +427,16 @@ test('runPaperLoop resumes a stored position and settles it when the saved marke
   assert.equal(slugLookupCount, 1);
   assert.equal(events.some((event) => event.type === 'paper-position-opened'), true);
   assert.equal(events.some((event) => event.type === 'paper-position-settled'), true);
+  assert.deepEqual(events.find((event) => event.type === 'paper-position-settled')?.review, {
+    setup: 'unclassified',
+    timing: 'standard',
+    entryBucket: '0.40-0.55',
+    volumeBucket: '>=1000',
+    quotedSidePrice: 0.42,
+  });
+  assert.equal(events.find((event) => event.type === 'paper-position-settled')?.entryReason, 'open first BTC bucket');
+  assert.deepEqual(events.find((event) => event.type === 'paper-position-settled')?.entryTags, []);
+  assert.equal(events.find((event) => event.type === 'paper-position-settled')?.outcome, 'win');
 });
 
 test('runPaperLoop settles an open position from the same run after that market bucket expires', async () => {
@@ -1127,6 +1153,15 @@ test('runPaperLoop only attempts one paper entry per 5m market and persists the 
   assert.equal(events.filter((event) => event.type === 'paper-strategy-decision').length, 1);
   assert.equal(events.filter((event) => event.type === 'paper-position-open-rejected').length, 1);
   assert.equal(events.find((event) => event.type === 'paper-position-open-rejected')?.reasonCode, 'no-visible-entry-liquidity');
+  assert.equal(events.find((event) => event.type === 'paper-position-open-rejected')?.decisionReason, 'single-asset realtime paper entry');
+  assert.deepEqual(events.find((event) => event.type === 'paper-position-open-rejected')?.decisionTags, []);
+  assert.deepEqual(events.find((event) => event.type === 'paper-position-open-rejected')?.review, {
+    setup: 'unclassified',
+    timing: 'standard',
+    entryBucket: '0.55-0.70',
+    volumeBucket: '>=1000',
+    quotedSidePrice: 0.57,
+  });
 });
 
 test('runPaperLoop refreshes a stale realtime position snapshot after that bucket has expired', async () => {
