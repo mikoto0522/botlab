@@ -1795,26 +1795,58 @@ test('polybot port v4 single asset skips a marginal starter setup in the final s
   assert.match(result.decision.reason, /late|window|chasing/i);
 });
 
-test('polybot port v4 single asset skips BTC continuation setups after BTC underperformed in paper logs', async () => {
+test('polybot port v4 single asset keeps stronger BTC pre-window continuation up setups', async () => {
   const result = await loadPolybotPortedV4SingleAssetResult({
     market: {
       asset: 'BTC',
       symbol: 'BTC-USD-5M',
       timeframe: '5m',
-      price: 0.31,
-      upPrice: 0.31,
-      downPrice: 0.69,
-      upAsk: 0.32,
-      downAsk: 0.7,
+      price: 0.585,
+      upPrice: 0.585,
+      downPrice: 0.415,
+      upAsk: 0.59,
+      downAsk: 0.42,
       volume: 1500,
       timestamp: '2026-04-07T11:30:00.000Z',
       candles: [
-        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.21, high: 0.24, low: 0.2, close: 0.23, volume: 1080 },
-        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.23, high: 0.25, low: 0.22, close: 0.245, volume: 1160 },
-        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.245, high: 0.27, low: 0.24, close: 0.26, volume: 1250 },
-        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.26, high: 0.285, low: 0.255, close: 0.278, volume: 1330 },
-        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.278, high: 0.302, low: 0.274, close: 0.294, volume: 1410 },
-        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.294, high: 0.314, low: 0.29, close: 0.31, volume: 1500 },
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.44, high: 0.47, low: 0.43, close: 0.46, volume: 1080 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.46, high: 0.5, low: 0.45, close: 0.49, volume: 1160 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.49, high: 0.53, low: 0.48, close: 0.52, volume: 1250 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.52, high: 0.56, low: 0.51, close: 0.55, volume: 1330 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.55, high: 0.59, low: 0.54, close: 0.57, volume: 1410 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.57, high: 0.6, low: 0.56, close: 0.585, volume: 1500 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:32:20.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'up');
+  assert.ok((result.decision.size ?? 0) >= 12);
+});
+
+test('polybot port v4 single asset skips mushy BTC continuation up setups in the middle zone', async () => {
+  const result = await loadPolybotPortedV4SingleAssetResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.525,
+      upPrice: 0.525,
+      downPrice: 0.475,
+      upAsk: 0.53,
+      downAsk: 0.48,
+      volume: 1400,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.37, high: 0.41, low: 0.36, close: 0.4, volume: 1050 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.4, high: 0.44, low: 0.39, close: 0.43, volume: 1120 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.43, high: 0.47, low: 0.42, close: 0.46, volume: 1210 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.46, high: 0.49, low: 0.45, close: 0.48, volume: 1300 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.48, high: 0.52, low: 0.47, close: 0.505, volume: 1360 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.505, high: 0.535, low: 0.5, close: 0.525, volume: 1400 },
       ],
     },
     position: { side: 'flat', size: 0, entryPrice: null },
@@ -1823,29 +1855,61 @@ test('polybot port v4 single asset skips BTC continuation setups after BTC under
   });
 
   assert.equal(result.decision.action, 'hold');
-  assert.match(result.decision.reason, /btc|disabled|eth/i);
+  assert.match(result.decision.reason, /btc|middle|zone|worth/i);
 });
 
-test('polybot port v4 single asset skips BTC reversion setups after BTC underperformed in paper logs', async () => {
+test('polybot port v4 single asset keeps a strong BTC down reversion after a stretched fade with heavy volume', async () => {
   const result = await loadPolybotPortedV4SingleAssetResult({
     market: {
       asset: 'BTC',
       symbol: 'BTC-USD-5M',
       timeframe: '5m',
-      price: 0.16,
-      upPrice: 0.16,
-      downPrice: 0.84,
-      upAsk: 0.17,
-      downAsk: 0.85,
-      volume: 1400,
+      price: 0.6,
+      upPrice: 0.6,
+      downPrice: 0.4,
+      upAsk: 0.62,
+      downAsk: 0.43,
+      volume: 3200,
       timestamp: '2026-04-07T11:30:00.000Z',
       candles: [
-        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.34, high: 0.35, low: 0.3, close: 0.31, volume: 1050 },
-        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.31, high: 0.32, low: 0.26, close: 0.27, volume: 1120 },
-        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.27, high: 0.28, low: 0.21, close: 0.22, volume: 1210 },
-        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.22, high: 0.23, low: 0.14, close: 0.15, volume: 1300 },
-        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.15, high: 0.17, low: 0.11, close: 0.12, volume: 1360 },
-        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.12, high: 0.18, low: 0.11, close: 0.16, volume: 1400 },
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.31, high: 0.33, low: 0.3, close: 0.32, volume: 2800 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.32, high: 0.41, low: 0.31, close: 0.4, volume: 2900 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.4, high: 0.49, low: 0.39, close: 0.48, volume: 3000 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.48, high: 0.57, low: 0.47, close: 0.56, volume: 3080 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.56, high: 0.65, low: 0.55, close: 0.64, volume: 3150 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.64, high: 0.65, low: 0.59, close: 0.6, volume: 3200 },
+      ],
+    },
+    position: { side: 'flat', size: 0, entryPrice: null },
+    balance: 100,
+    clock: { now: '2026-04-07T11:33:05.000Z' },
+  });
+
+  assert.equal(result.decision.action, 'buy');
+  assert.equal(result.decision.side, 'down');
+  assert.ok((result.decision.tags ?? []).includes('reversion'));
+});
+
+test('polybot port v4 single asset skips BTC down reversion when the no-side quote is still too cheap', async () => {
+  const result = await loadPolybotPortedV4SingleAssetResult({
+    market: {
+      asset: 'BTC',
+      symbol: 'BTC-USD-5M',
+      timeframe: '5m',
+      price: 0.85,
+      upPrice: 0.85,
+      downPrice: 0.15,
+      upAsk: 0.86,
+      downAsk: 0.16,
+      volume: 3200,
+      timestamp: '2026-04-07T11:30:00.000Z',
+      candles: [
+        { timestamp: '2026-04-07T11:05:00.000Z', open: 0.57, high: 0.61, low: 0.56, close: 0.6, volume: 2800 },
+        { timestamp: '2026-04-07T11:10:00.000Z', open: 0.6, high: 0.69, low: 0.59, close: 0.68, volume: 2900 },
+        { timestamp: '2026-04-07T11:15:00.000Z', open: 0.68, high: 0.77, low: 0.67, close: 0.76, volume: 3000 },
+        { timestamp: '2026-04-07T11:20:00.000Z', open: 0.76, high: 0.85, low: 0.75, close: 0.84, volume: 3080 },
+        { timestamp: '2026-04-07T11:25:00.000Z', open: 0.84, high: 0.93, low: 0.83, close: 0.92, volume: 3150 },
+        { timestamp: '2026-04-07T11:30:00.000Z', open: 0.92, high: 0.93, low: 0.84, close: 0.85, volume: 3200 },
       ],
     },
     position: { side: 'flat', size: 0, entryPrice: null },
@@ -1854,7 +1918,6 @@ test('polybot port v4 single asset skips BTC reversion setups after BTC underper
   });
 
   assert.equal(result.decision.action, 'hold');
-  assert.match(result.decision.reason, /btc|disabled|eth/i);
 });
 
 test('polybot port v4 single asset skips mushy ETH confirmed continuation in the middle band', async () => {

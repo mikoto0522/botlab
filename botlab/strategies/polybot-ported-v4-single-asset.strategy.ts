@@ -9,6 +9,11 @@ interface PolybotPortedV4SingleAssetParams extends Record<string, unknown> {
   lookbackCandles: number;
   minimumVolume: number;
   allowBtcTrades: boolean;
+  btcUpContinuationMinPrice: number;
+  btcUpContinuationMaxPrice: number;
+  btcDownReversionMinPrice: number;
+  btcDownReversionMaxPrice: number;
+  btcDownReversionMinVolume: number;
   earlyContinuationAlignmentMin: number;
   earlyContinuationMoveMin: number;
   preferredWindowContinuationAlignmentMin: number;
@@ -369,7 +374,46 @@ function blocksEntryZone(
   candidate: SignalCandidate,
   entryPrice: number,
   params: PolybotPortedV4SingleAssetParams,
+  timing: EntryTimingProfile,
 ): string | undefined {
+  if (summary.asset === 'BTC') {
+    if (!params.allowBtcTrades) {
+      return 'BTC setups are disabled for this strategy right now';
+    }
+
+    if (candidate.family === 'continuation') {
+      if (candidate.side === 'down') {
+        return 'BTC downside continuation kept underperforming, so the strategy now waits for stronger reversal fades instead';
+      }
+
+      if (
+        entryPrice < params.btcUpContinuationMinPrice
+        || entryPrice > params.btcUpContinuationMaxPrice
+      ) {
+        return 'BTC continuation stayed too sloppy outside the stronger upper-band zone, so the strategy now waits for a cleaner carry';
+      }
+
+      return undefined;
+    }
+
+    if (candidate.side === 'up') {
+      return 'BTC upside reversion kept failing in paper trading, so the strategy now leaves that snapback alone';
+    }
+
+    if (
+      entryPrice < params.btcDownReversionMinPrice
+      || entryPrice > params.btcDownReversionMaxPrice
+    ) {
+      return 'BTC downside reversion only pays often enough in the tighter 0.40 to 0.46 zone';
+    }
+
+    if (summary.volume < params.btcDownReversionMinVolume) {
+      return 'BTC downside reversion now needs heavier volume before the strategy will fade it';
+    }
+
+    return undefined;
+  }
+
   if (
     summary.asset === 'ETH'
     && candidate.family === 'continuation'
@@ -451,7 +495,7 @@ function evaluatePortedStrategyV4SingleAsset(
   })[0]!;
   const entryPrice = best.side === 'up' ? summary.quotedUp : summary.quotedDown;
 
-  const entryZoneBlockReason = blocksEntryZone(summary, best, entryPrice, params);
+  const entryZoneBlockReason = blocksEntryZone(summary, best, entryPrice, params, timing);
   if (entryZoneBlockReason) {
     return {
       action: 'hold',
@@ -557,7 +601,12 @@ export const strategy: BotlabStrategyDefinition<PolybotPortedV4SingleAssetParams
   defaults: {
     lookbackCandles: 6,
     minimumVolume: 750,
-    allowBtcTrades: false,
+    allowBtcTrades: true,
+    btcUpContinuationMinPrice: 0.55,
+    btcUpContinuationMaxPrice: 0.62,
+    btcDownReversionMinPrice: 0.4,
+    btcDownReversionMaxPrice: 0.46,
+    btcDownReversionMinVolume: 1000,
     earlyContinuationAlignmentMin: 0.55,
     earlyContinuationMoveMin: 0.03,
     preferredWindowContinuationAlignmentMin: 0.5,
